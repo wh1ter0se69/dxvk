@@ -2640,10 +2640,15 @@ namespace dxvk {
       // Missing: created EXCLUSIVELY ("x"), so of two games starting together only one writes the header and neither
       // can truncate the other's first records (Codex r4); the loser just appends below. The state cache creates its
       // folder only at its first pipeline write, after this, so a fresh folder may not exist yet.
-      std::FILE* init = std::fopen(path.c_str(), "wbx");
+#ifdef _WIN32
+      auto openExclusive = [&file] () { return _wfopen(file.c_str(), L"wbx"); };   // a wide path, like str::topath
+#else
+      auto openExclusive = [&file] () { return std::fopen(file.c_str(), "wbx"); };
+#endif
+      std::FILE* init = openExclusive();
 
       if (!init && env::createDirectory(env::getEnvVar("DXVK_STATE_CACHE_PATH")))
-        init = std::fopen(path.c_str(), "wbx");
+        init = openExclusive();
 
       if (init) {
         std::fwrite(&expected, sizeof(expected), 1, init);
