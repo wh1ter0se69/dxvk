@@ -12,6 +12,11 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
 
 namespace dxvk {
 
@@ -2605,8 +2610,31 @@ namespace dxvk {
   }
 
 
+  // Every reader/repairer and every append of the key file holds this, so two devices or two games sharing the folder
+  // can neither truncate nor cut each other's records (Codex r2-r7 found one race after another without it). A lock
+  // on a sidecar file, so the data file can still be truncated and reopened under it. No-op on Windows.
+  struct GxKeyFileLock {
+    int fd = -1;
+    explicit GxKeyFileLock(const std::string& path) {
+#ifndef _WIN32
+      fd = ::open((path + ".lock").c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+      if (fd >= 0)
+        ::flock(fd, LOCK_EX);
+#endif
+    }
+    ~GxKeyFileLock() {
+#ifndef _WIN32
+      if (fd >= 0)
+        ::close(fd);   // releases the flock
+#endif
+    }
+  };
+
+
   void D3D9FFShaderModuleSet::GxLoad(const std::string& path, bool reset) {
     m_gxPath = path;
+    env::createDirectory(env::getEnvVar("DXVK_STATE_CACHE_PATH"));   // for the lock file; a no-op when it exists
+    GxKeyFileLock lock(path);
 
     const auto file = str::topath(path.c_str());
     D3D9GxFFKeysHeader expected, header;
@@ -2674,8 +2702,7 @@ namespace dxvk {
     } else if (torn) {
       // Only a torn tail is cut, never a file that merely grew: a record another device or game appended after this
       // read reached the end is whole and stays (Codex r3).
-      // ponytail: a writer that appends after a torn tail, in the instant before this cut, loses that record; it is
-      // re-recorded the next time its key is first drawn.
+      // A writer appends only under the same lock, so nothing can land between this read and the cut.
       std::filesystem::resize_file(std::filesystem::path(file), uintmax_t(good), ec);
     }
 
@@ -2707,7 +2734,8 @@ namespace dxvk {
     if (m_gxPath.empty() || !known.insert(key).second || !m_gxFile)
       return;
 
-    // One buffer, one write: an append-mode write lands whole at the end of the file (GxLoad).
+    // One buffer, one write, under the file lock: it lands whole at the end of the file (GxLoad).
+    GxKeyFileLock lock(m_gxPath);
     char record[1 + sizeof(K) + sizeof(uint32_t)];
     const uint32_t sum = GxKeyChecksum(&key, sizeof(K));
     record[0] = char(stage);
