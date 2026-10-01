@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <iomanip>
 
 #include "../util/util_time.h"
@@ -1050,6 +1051,14 @@ namespace dxvk {
       // Exit early if the state vector is invalid
       if (!this->validatePipelineState(state, true))
         return std::make_pair(VK_NULL_HANDLE, DxvkGraphicsPipelineType::FastPipeline);
+
+      // GeneralsX A2 01/10/2026: a draw that found no compiled pipeline - it compiles one now, or waits for the worker
+      // that is compiling it. Either way it is the stall the load-screen warm-up exists to remove, so every one is
+      // logged; the game's "[GXWARM] load-end" line splits the load-screen ones from the in-match misses.
+      static std::atomic<uint32_t> s_gxMisses = { 0u };
+      std::fprintf(stderr, "[GXWARM] miss n=%u vs=%s fs=%s\n", ++s_gxMisses,
+        m_shaders.vs != nullptr ? m_shaders.vs->debugName().c_str() : "-",
+        m_shaders.fs != nullptr ? m_shaders.fs->debugName().c_str() : "-");
 
       // Prevent other threads from adding new instances and check again
       std::unique_lock<dxvk::mutex> lock(m_mutex);
