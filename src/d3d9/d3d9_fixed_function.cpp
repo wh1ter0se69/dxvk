@@ -2631,9 +2631,17 @@ namespace dxvk {
   };
 
 
+  // The state cache's folder, created when named: an empty DXVK_STATE_CACHE_PATH means the cwd, which exists, and is
+  // never handed to createDirectory (Codex r8).
+  static bool gxMakeCacheDir() {
+    const std::string dir = env::getEnvVar("DXVK_STATE_CACHE_PATH");
+    return !dir.empty() && env::createDirectory(dir);
+  }
+
+
   void D3D9FFShaderModuleSet::GxLoad(const std::string& path, bool reset) {
     m_gxPath = path;
-    env::createDirectory(env::getEnvVar("DXVK_STATE_CACHE_PATH"));   // for the lock file; a no-op when it exists
+    gxMakeCacheDir();   // for the lock file; a no-op when it exists
     GxKeyFileLock lock(path);
 
     const auto file = str::topath(path.c_str());
@@ -2688,7 +2696,7 @@ namespace dxvk {
 #endif
       std::FILE* init = openExclusive();
 
-      if (!init && env::createDirectory(env::getEnvVar("DXVK_STATE_CACHE_PATH")))
+      if (!init && gxMakeCacheDir())
         init = openExclusive();
 
       if (init) {
