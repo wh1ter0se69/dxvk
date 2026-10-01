@@ -2636,15 +2636,23 @@ namespace dxvk {
     // records at the end instead of overwriting each other's. A key recorded twice that way is merged by the next load.
     std::error_code ec;
 
-    if (good == 0) {
-      // Missing, empty or foreign (another key layout): a new file. The state cache creates its folder only at its
-      // first pipeline write, after this, so a fresh folder may not exist yet.
-      std::ofstream init(file.c_str(), std::ios_base::binary | std::ios_base::trunc);
+    if (good == 0 && !std::filesystem::exists(std::filesystem::path(file), ec)) {
+      // Missing: created EXCLUSIVELY ("x"), so of two games starting together only one writes the header and neither
+      // can truncate the other's first records (Codex r4); the loser just appends below. The state cache creates its
+      // folder only at its first pipeline write, after this, so a fresh folder may not exist yet.
+      std::FILE* init = std::fopen(path.c_str(), "wbx");
 
       if (!init && env::createDirectory(env::getEnvVar("DXVK_STATE_CACHE_PATH")))
-        init.open(file.c_str(), std::ios_base::binary | std::ios_base::trunc);
+        init = std::fopen(path.c_str(), "wbx");
 
-      init.write(reinterpret_cast<const char*>(&expected), sizeof(expected));
+      if (init) {
+        std::fwrite(&expected, sizeof(expected), 1, init);
+        std::fclose(init);
+      }
+    } else if (good == 0) {
+      // Present but empty or foreign (another key layout): replaced.
+      std::ofstream(file.c_str(), std::ios_base::binary | std::ios_base::trunc)
+        .write(reinterpret_cast<const char*>(&expected), sizeof(expected));
     } else if (torn) {
       // Only a torn tail is cut, never a file that merely grew: a record another device or game appended after this
       // read reached the end is whole and stays (Codex r3).
