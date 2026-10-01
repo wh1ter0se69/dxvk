@@ -11,6 +11,7 @@
 #include <cfloat>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 
 namespace dxvk {
 
@@ -2597,62 +2598,58 @@ namespace dxvk {
   void D3D9FFShaderModuleSet::GxLoad(const std::string& path) {
     m_gxPath = path;
 
-    std::ifstream in(str::topath(path.c_str()).c_str(), std::ios_base::binary);
+    const auto file = str::topath(path.c_str());
     D3D9GxFFKeysHeader expected, header;
+    std::streamoff good = 0;   // the end of the last whole record
 
-    if (in.read(reinterpret_cast<char*>(&header), sizeof(header))
-     && !std::memcmp(&header, &expected, sizeof(header))) {
-      uint8_t stage = 0;
+    { std::ifstream in(file.c_str(), std::ios_base::binary);
 
-      // A torn or foreign tail ends the read; what was read is kept and the rewrite below drops the rest.
-      while (in.read(reinterpret_cast<char*>(&stage), sizeof(stage))) {
-        if (stage == 0) {
-          D3D9FFShaderKeyVS key;
-          if (!in.read(reinterpret_cast<char*>(&key), sizeof(key)))
+      if (in.read(reinterpret_cast<char*>(&header), sizeof(header))
+       && !std::memcmp(&header, &expected, sizeof(header))) {
+        good = sizeof(header);
+        uint8_t stage = 0;
+
+        // A torn or foreign tail ends the read; the file is cut back to the last whole record below.
+        while (in.read(reinterpret_cast<char*>(&stage), sizeof(stage))) {
+          if (stage == 0) {
+            D3D9FFShaderKeyVS key;
+            if (!in.read(reinterpret_cast<char*>(&key), sizeof(key)))
+              break;
+            m_gxKnownVS.insert(key);
+          } else if (stage == 1) {
+            D3D9FFShaderKeyFS key;
+            if (!in.read(reinterpret_cast<char*>(&key), sizeof(key)))
+              break;
+            m_gxKnownFS.insert(key);
+          } else {
             break;
-          m_gxKnownVS.insert(key);
-        } else if (stage == 1) {
-          D3D9FFShaderKeyFS key;
-          if (!in.read(reinterpret_cast<char*>(&key), sizeof(key)))
-            break;
-          m_gxKnownFS.insert(key);
-        } else {
-          break;
+          }
+          good = in.tellg();
         }
       }
     }
 
-    in.close();
+    // Append-only from here, one write per record (GxRecord): two devices, or two games sharing the folder, add whole
+    // records at the end instead of overwriting each other's. A key recorded twice that way is merged by the next load.
+    std::error_code ec;
 
-    // Rewritten whole on every load: deduplicated, and a torn tail cannot misalign the appends that follow.
-    // ponytail: two games sharing one cache dir at once can interleave appends; the next load keeps the clean prefix.
-    m_gxFile.open(str::topath(path.c_str()).c_str(), std::ios_base::binary | std::ios_base::trunc);
+    if (good == 0) {
+      // Missing, empty or foreign (another key layout): a new file. The state cache creates its folder only at its
+      // first pipeline write, after this, so a fresh folder may not exist yet.
+      std::ofstream init(file.c_str(), std::ios_base::binary | std::ios_base::trunc);
 
-    // The state cache creates its folder only at its first pipeline write, after this; a fresh one may not exist yet.
-    if (!m_gxFile && env::createDirectory(env::getEnvVar("DXVK_STATE_CACHE_PATH")))
-      m_gxFile.open(str::topath(path.c_str()).c_str(), std::ios_base::binary | std::ios_base::trunc);
+      if (!init && env::createDirectory(env::getEnvVar("DXVK_STATE_CACHE_PATH")))
+        init.open(file.c_str(), std::ios_base::binary | std::ios_base::trunc);
 
-    if (!m_gxFile)
-      return;
-
-    m_gxFile.write(reinterpret_cast<const char*>(&expected), sizeof(expected));
-
-    for (const auto& key : m_gxKnownVS) {
-      const uint8_t stage = 0;
-      m_gxFile.write(reinterpret_cast<const char*>(&stage), sizeof(stage));
-      m_gxFile.write(reinterpret_cast<const char*>(&key), sizeof(key));
+      init.write(reinterpret_cast<const char*>(&expected), sizeof(expected));
+    } else if (std::filesystem::file_size(std::filesystem::path(file), ec) > uintmax_t(good)) {
+      std::filesystem::resize_file(std::filesystem::path(file), uintmax_t(good), ec);
     }
 
-    for (const auto& key : m_gxKnownFS) {
-      const uint8_t stage = 1;
-      m_gxFile.write(reinterpret_cast<const char*>(&stage), sizeof(stage));
-      m_gxFile.write(reinterpret_cast<const char*>(&key), sizeof(key));
-    }
+    m_gxFile.open(file.c_str(), std::ios_base::binary | std::ios_base::app);
 
-    m_gxFile.flush();
-
-    std::fprintf(stderr, "[GXWARM] dxvk ffkeys loaded vs=%zu fs=%zu file=%s\n",
-      m_gxKnownVS.size(), m_gxKnownFS.size(), path.c_str());
+    std::fprintf(stderr, "[GXWARM] dxvk ffkeys loaded vs=%zu fs=%zu file=%s%s\n",
+      m_gxKnownVS.size(), m_gxKnownFS.size(), path.c_str(), m_gxFile ? "" : " (cannot write it)");
   }
 
 
@@ -2677,8 +2674,11 @@ namespace dxvk {
     if (m_gxPath.empty() || !known.insert(key).second || !m_gxFile)
       return;
 
-    m_gxFile.write(reinterpret_cast<const char*>(&stage), sizeof(stage));
-    m_gxFile.write(reinterpret_cast<const char*>(&key), sizeof(key));
+    // One buffer, one write: an append-mode write lands whole at the end of the file (GxLoad).
+    char record[1 + sizeof(K)];
+    record[0] = char(stage);
+    std::memcpy(record + 1, &key, sizeof(K));
+    m_gxFile.write(record, sizeof(record));
     m_gxFile.flush();
   }
 
