@@ -2628,6 +2628,10 @@ namespace dxvk {
     // ponytail: two games sharing one cache dir at once can interleave appends; the next load keeps the clean prefix.
     m_gxFile.open(str::topath(path.c_str()).c_str(), std::ios_base::binary | std::ios_base::trunc);
 
+    // The state cache creates its folder only at its first pipeline write, after this; a fresh one may not exist yet.
+    if (!m_gxFile && env::createDirectory(env::getEnvVar("DXVK_STATE_CACHE_PATH")))
+      m_gxFile.open(str::topath(path.c_str()).c_str(), std::ios_base::binary | std::ios_base::trunc);
+
     if (!m_gxFile)
       return;
 

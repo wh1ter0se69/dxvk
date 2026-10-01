@@ -264,9 +264,13 @@ namespace dxvk {
      * plus worker tasks queued or running
      */
     uint32_t gxPendingPipelines() const {
+      // The state cache's count FIRST: its worker queues an item's tasks (tasksTotal += 1) before it drops the item
+      // (gxPending -= 1), so an item read as dropped here is already in the worker totals read next. In the other
+      // order an item handed over between the two reads is in neither, and a running compile reads as 0.
+      uint32_t queued = m_stateCache.gxPending();
       DxvkPipelineWorkerStats stats = m_workers.getStats();
       uint64_t running = stats.tasksTotal > stats.tasksCompleted ? stats.tasksTotal - stats.tasksCompleted : 0;
-      return m_stateCache.gxPending() + uint32_t(running);
+      return queued + uint32_t(running);
     }
 
     /**

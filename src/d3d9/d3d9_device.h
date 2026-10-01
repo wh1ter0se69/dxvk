@@ -1160,9 +1160,10 @@ namespace dxvk {
     uint32_t GxWarmPipelines();
 
     /**
-     * \brief GeneralsX A2: the most recently created device still alive, for the GXDXVK_WarmPipelines export.
+     * \brief GeneralsX A2: GxWarmPipelines on the newest device still alive (0 without one), for the
+     * GXDXVK_WarmPipelines export; a device being destroyed waits for it.
      */
-    static D3D9DeviceEx* GxCurrentDevice();
+    static uint32_t GxWarmCurrentDevice();
 
     /**
      * \brief Returns the number of shader modules generated for ProcessVertices.

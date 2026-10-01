@@ -50,8 +50,7 @@ extern "C" {
   // return the compiles still pending; 0 without a device. The game resolves it with dlsym, so a DXVK without it
   // simply has no warm-up.
   DLLEXPORT uint32_t GXDXVK_WarmPipelines() {
-    dxvk::D3D9DeviceEx* device = dxvk::D3D9DeviceEx::GxCurrentDevice();
-    return device != nullptr ? device->GxWarmPipelines() : 0;
+    return dxvk::D3D9DeviceEx::GxWarmCurrentDevice();
   }
 
   DLLEXPORT void __stdcall D3DPERF_SetMarker(D3DCOLOR col, LPCWSTR wszName) {

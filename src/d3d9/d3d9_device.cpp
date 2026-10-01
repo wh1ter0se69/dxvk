@@ -33,8 +33,10 @@
 
 namespace dxvk {
 
-  // GeneralsX A2: see D3D9DeviceEx::GxCurrentDevice.
-  static std::atomic<D3D9DeviceEx*> s_gxCurrentDevice = { nullptr };
+  // GeneralsX A2: the live devices, newest last, for the GXDXVK_WarmPipelines export. The export holds the lock for its
+  // whole call and a destructor takes it before teardown, so a device cannot be destroyed while the export uses it.
+  static dxvk::mutex                 s_gxDeviceLock;
+  static std::vector<D3D9DeviceEx*>  s_gxDevices;
 
 
   D3D9DeviceEx::D3D9DeviceEx(
@@ -217,7 +219,8 @@ namespace dxvk {
       });
     }
 
-    s_gxCurrentDevice.store(this);
+    { std::lock_guard<dxvk::mutex> lock(s_gxDeviceLock);
+      s_gxDevices.push_back(this); }
   }
 
 
@@ -244,14 +247,15 @@ namespace dxvk {
   }
 
 
-  D3D9DeviceEx* D3D9DeviceEx::GxCurrentDevice() {
-    return s_gxCurrentDevice.load();
+  uint32_t D3D9DeviceEx::GxWarmCurrentDevice() {
+    std::lock_guard<dxvk::mutex> lock(s_gxDeviceLock);
+    return s_gxDevices.empty() ? 0 : s_gxDevices.back()->GxWarmPipelines();
   }
 
 
   D3D9DeviceEx::~D3D9DeviceEx() {
-    D3D9DeviceEx* self = this;
-    s_gxCurrentDevice.compare_exchange_strong(self, nullptr);
+    { std::lock_guard<dxvk::mutex> lock(s_gxDeviceLock);
+      s_gxDevices.erase(std::remove(s_gxDevices.begin(), s_gxDevices.end(), this), s_gxDevices.end()); }
 
     // Avoids hanging when in this state, see comment
     // in DxvkDevice::~DxvkDevice.
