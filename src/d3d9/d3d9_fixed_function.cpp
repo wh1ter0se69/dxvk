@@ -2585,17 +2585,27 @@ namespace dxvk {
   }
 
 
-  // GeneralsX A2: <exe>.dxvk-ffkeys = this header, then records of { uint8 stage (0 VS, 1 FS), raw key }. The header
-  // carries both key sizes, so a DXVK whose key layout changed starts a new file instead of misreading the old one.
+  // GeneralsX A2: <exe>.dxvk-ffkeys = this header, then records of { uint8 stage (0 VS, 1 FS), raw key, uint32 FNV-1a of
+  // the key }. The header carries both key sizes, so a DXVK whose key layout changed starts a new file instead of
+  // misreading the old one; bump the version when a key's MEANING changes at the same size. A record whose checksum
+  // fails is skipped, never generated (Codex r6).
   struct D3D9GxFFKeysHeader {
     char     magic[4]  = { 'G', 'X', 'F', 'F' };
-    uint32_t version   = 1;
+    uint32_t version   = 2;
     uint32_t vsKeySize = sizeof(D3D9FFShaderKeyVS);
     uint32_t fsKeySize = sizeof(D3D9FFShaderKeyFS);
   };
 
 
-  void D3D9FFShaderModuleSet::GxLoad(const std::string& path) {
+  static uint32_t GxKeyChecksum(const void* data, size_t size) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < size; i++)
+      h = (h ^ reinterpret_cast<const uint8_t*>(data)[i]) * 16777619u;
+    return h;
+  }
+
+
+  void D3D9FFShaderModuleSet::GxLoad(const std::string& path, bool reset) {
     m_gxPath = path;
 
     const auto file = str::topath(path.c_str());
@@ -2605,7 +2615,7 @@ namespace dxvk {
 
     { std::ifstream in(file.c_str(), std::ios_base::binary);
 
-      if (in.read(reinterpret_cast<char*>(&header), sizeof(header))
+      if (!reset && in.read(reinterpret_cast<char*>(&header), sizeof(header))
        && !std::memcmp(&header, &expected, sizeof(header))) {
         good = sizeof(header);
         uint8_t stage = 0;
@@ -2613,16 +2623,19 @@ namespace dxvk {
         // A torn or foreign tail ends the read; the file is cut back to the last whole record below.
         while (in.read(reinterpret_cast<char*>(&stage), sizeof(stage))) {
           torn = true;
+          uint32_t sum = 0;
           if (stage == 0) {
             D3D9FFShaderKeyVS key;
-            if (!in.read(reinterpret_cast<char*>(&key), sizeof(key)))
+            if (!in.read(reinterpret_cast<char*>(&key), sizeof(key)) || !in.read(reinterpret_cast<char*>(&sum), sizeof(sum)))
               break;
-            m_gxKnownVS.insert(key);
+            if (sum == GxKeyChecksum(&key, sizeof(key)))
+              m_gxKnownVS.insert(key);
           } else if (stage == 1) {
             D3D9FFShaderKeyFS key;
-            if (!in.read(reinterpret_cast<char*>(&key), sizeof(key)))
+            if (!in.read(reinterpret_cast<char*>(&key), sizeof(key)) || !in.read(reinterpret_cast<char*>(&sum), sizeof(sum)))
               break;
-            m_gxKnownFS.insert(key);
+            if (sum == GxKeyChecksum(&key, sizeof(key)))
+              m_gxKnownFS.insert(key);
           } else {
             break;
           }
@@ -2695,9 +2708,11 @@ namespace dxvk {
       return;
 
     // One buffer, one write: an append-mode write lands whole at the end of the file (GxLoad).
-    char record[1 + sizeof(K)];
+    char record[1 + sizeof(K) + sizeof(uint32_t)];
+    const uint32_t sum = GxKeyChecksum(&key, sizeof(K));
     record[0] = char(stage);
     std::memcpy(record + 1, &key, sizeof(K));
+    std::memcpy(record + 1 + sizeof(K), &sum, sizeof(sum));
     m_gxFile.write(record, sizeof(record));
     m_gxFile.flush();
   }

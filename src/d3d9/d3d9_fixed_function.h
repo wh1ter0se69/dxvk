@@ -268,7 +268,7 @@ namespace dxvk {
     // docs/WORKDIR/evidence/shadercache-2026-08-12.md section 4). Every fixed-function key this set generates is
     // recorded to <exe>.dxvk-ffkeys next to the state cache, and GxPrewarm() generates all recorded keys up front,
     // which releases every recorded pipeline to the compile workers. CS thread only, like GetShaderModule.
-    void GxLoad(const std::string& path);
+    void GxLoad(const std::string& path, bool reset);
 
     void GxPrewarm(D3D9DeviceEx* pDevice);
 

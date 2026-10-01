@@ -213,9 +213,10 @@ namespace dxvk {
 
       EmitCs([
         &cShaders = m_ffModules,
-        cPath     = std::move(path)
+        cPath     = std::move(path),
+        cReset    = useStateCache == "reset"   // DXVK_STATE_CACHE=reset starts the key file over too (Codex r6)
       ] (DxvkContext* ctx) {
-        cShaders.GxLoad(cPath);
+        cShaders.GxLoad(cPath, cReset);
       });
     }
 
