@@ -4,6 +4,7 @@
 #include "d3d9_shader_validator.h"
 
 #include "d3d9_annotation.h"
+#include "d3d9_device.h"
 
 class D3DFE_PROCESSVERTICES;
 using PSGPERRORID = UINT;
@@ -43,6 +44,14 @@ extern "C" {
 
   DLLEXPORT int __stdcall D3DPERF_EndEvent(void) {
     return dxvk::D3D9GlobalAnnotationList::Instance().EndEvent();
+  }
+
+  // GeneralsX A2 01/10/2026: start the pipeline warm-up on the first call (D3D9DeviceEx::GxWarmPipelines) and
+  // return the compiles still pending; 0 without a device. The game resolves it with dlsym, so a DXVK without it
+  // simply has no warm-up.
+  DLLEXPORT uint32_t GXDXVK_WarmPipelines() {
+    dxvk::D3D9DeviceEx* device = dxvk::D3D9DeviceEx::GxCurrentDevice();
+    return device != nullptr ? device->GxWarmPipelines() : 0;
   }
 
   DLLEXPORT void __stdcall D3DPERF_SetMarker(D3DCOLOR col, LPCWSTR wszName) {

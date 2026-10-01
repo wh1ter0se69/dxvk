@@ -370,6 +370,7 @@ namespace dxvk {
       if (!workerLock)
         workerLock = std::unique_lock<dxvk::mutex>(m_workerLock);
       
+      m_gxPending += 1;
       m_workerQueue.push(item);
     }
 
@@ -788,6 +789,10 @@ namespace dxvk {
       }
 
       compilePipelines(item);
+
+      // After compilePipelines has queued its pipelines with the workers, so the pending total never dips to 0
+      // between the two counters (DxvkPipelineManager::gxPendingPipelines).
+      m_gxPending -= 1;
     }
   }
 

@@ -1153,6 +1153,18 @@ namespace dxvk {
     }
 
     /**
+     * \brief GeneralsX A2: generates every recorded fixed-function shader on its first call (see
+     * D3D9FFShaderModuleSet::GxLoad), so the state cache compiles the recorded pipelines now; returns how many
+     * pipeline compiles are still pending. The game polls it at the end of a load screen.
+     */
+    uint32_t GxWarmPipelines();
+
+    /**
+     * \brief GeneralsX A2: the most recently created device still alive, for the GXDXVK_WarmPipelines export.
+     */
+    static D3D9DeviceEx* GxCurrentDevice();
+
+    /**
      * \brief Returns the number of shader modules generated for ProcessVertices.
      */
     UINT GetSWVPShaderCount() const {
@@ -1477,6 +1489,8 @@ namespace dxvk {
     D3D9FormatHelper*               m_converter   = nullptr;
 
     D3D9FFShaderModuleSet           m_ffModules;
+    std::atomic<bool>               m_gxWarmIssued = { false };
+    std::atomic<bool>               m_gxWarmDone   = { false };
     D3D9SWVPEmulator                m_swvpEmulator;
 
     Com<D3D9StateBlock, false>      m_recorder;

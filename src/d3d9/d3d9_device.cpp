@@ -33,6 +33,10 @@
 
 namespace dxvk {
 
+  // GeneralsX A2: see D3D9DeviceEx::GxCurrentDevice.
+  static std::atomic<D3D9DeviceEx*> s_gxCurrentDevice = { nullptr };
+
+
   D3D9DeviceEx::D3D9DeviceEx(
           D3D9InterfaceEx*       pParent,
           D3D9Adapter*           pAdapter,
@@ -195,10 +199,60 @@ namespace dxvk {
     m_activeRTsWhichAreTextures = 0;
     m_alphaSwizzleRTs = 0;
     m_lastHazardsRT = 0;
+
+    // GeneralsX A2: the fixed-function key record lives next to the state cache and only when it is on (the same
+    // two switches DxvkStateCache reads). Loaded on the CS thread, the only thread that touches m_ffModules.
+    const std::string useStateCache = env::getEnvVar("DXVK_STATE_CACHE");
+    if (useStateCache != "0" && useStateCache != "disable" && m_dxvkDevice->config().enableStateCache) {
+      std::string path = env::getEnvVar("DXVK_STATE_CACHE_PATH");
+      if (!path.empty() && *path.rbegin() != '/')
+        path += '/';
+      path += env::getExeBaseName() + ".dxvk-ffkeys";
+
+      EmitCs([
+        &cShaders = m_ffModules,
+        cPath     = std::move(path)
+      ] (DxvkContext* ctx) {
+        cShaders.GxLoad(cPath);
+      });
+    }
+
+    s_gxCurrentDevice.store(this);
+  }
+
+
+  uint32_t D3D9DeviceEx::GxWarmPipelines() {
+    if (!m_gxWarmIssued.exchange(true)) {
+      D3D9DeviceLock lock = LockDevice();
+
+      EmitCs([
+        this,
+        &cShaders = m_ffModules
+      ] (DxvkContext* ctx) {
+        cShaders.GxPrewarm(this);
+        m_gxWarmDone.store(true);
+      });
+
+      FlushCsChunk();
+    }
+
+    // Until the CS thread has generated the shaders, the state cache has not queued their pipelines yet.
+    if (!m_gxWarmDone.load())
+      return 1;
+
+    return m_dxvkDevice->gxPendingPipelines();
+  }
+
+
+  D3D9DeviceEx* D3D9DeviceEx::GxCurrentDevice() {
+    return s_gxCurrentDevice.load();
   }
 
 
   D3D9DeviceEx::~D3D9DeviceEx() {
+    D3D9DeviceEx* self = this;
+    s_gxCurrentDevice.compare_exchange_strong(self, nullptr);
+
     // Avoids hanging when in this state, see comment
     // in DxvkDevice::~DxvkDevice.
     if (this_thread::isInModuleDetachment())

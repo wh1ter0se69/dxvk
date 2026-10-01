@@ -59,6 +59,13 @@ namespace dxvk {
       const DxvkGraphicsPipelineStateInfo&  state);
 
     /**
+     * \brief GeneralsX A2: queued worker items not yet handed to the pipeline workers
+     */
+    uint32_t gxPending() const {
+      return m_gxPending.load();
+    }
+
+    /**
      * \brief Registers a newly compiled shader
      * 
      * Makes the shader available to the pipeline
@@ -89,6 +96,7 @@ namespace dxvk {
 
     std::vector<DxvkStateCacheEntry>  m_entries;
     std::atomic<bool>                 m_stopThreads = { false };
+    std::atomic<uint32_t>             m_gxPending   = { 0u };
 
     dxvk::mutex                       m_entryLock;
 

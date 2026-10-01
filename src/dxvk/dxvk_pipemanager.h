@@ -260,6 +260,16 @@ namespace dxvk {
     }
 
     /**
+     * \brief GeneralsX A2: pipeline compiles not yet finished - state cache items not yet queued with the workers,
+     * plus worker tasks queued or running
+     */
+    uint32_t gxPendingPipelines() const {
+      DxvkPipelineWorkerStats stats = m_workers.getStats();
+      uint64_t running = stats.tasksTotal > stats.tasksCompleted ? stats.tasksTotal - stats.tasksCompleted : 0;
+      return m_stateCache.gxPending() + uint32_t(running);
+    }
+
+    /**
      * \brief Stops async compiler threads
      */
     void stopWorkerThreads();

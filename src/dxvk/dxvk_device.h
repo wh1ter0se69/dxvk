@@ -472,6 +472,13 @@ namespace dxvk {
      */
     void registerShader(
       const Rc<DxvkShader>&         shader);
+
+    /**
+     * \brief GeneralsX A2: pipeline compiles still pending (DxvkPipelineManager::gxPendingPipelines)
+     */
+    uint32_t gxPendingPipelines() {
+      return m_objects.pipelineManager().gxPendingPipelines();
+    }
     
     /**
      * \brief Prioritizes compilation of a given shader

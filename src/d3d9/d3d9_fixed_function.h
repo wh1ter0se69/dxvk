@@ -9,6 +9,9 @@
 #include "../dxso/dxso_isgn.h"
 
 #include <unordered_map>
+#include <unordered_set>
+#include <fstream>
+#include <string>
 
 namespace dxvk {
 
@@ -260,7 +263,30 @@ namespace dxvk {
       return m_fsModules.size();
     }
 
+    // GeneralsX A2 01/10/2026: the state cache can compile a recorded pipeline only once all of its shaders exist,
+    // and fixed-function shaders are generated at their first draw - so the cache never ran ahead of them (GeneralsX
+    // docs/WORKDIR/evidence/shadercache-2026-08-12.md section 4). Every fixed-function key this set generates is
+    // recorded to <exe>.dxvk-ffkeys next to the state cache, and GxPrewarm() generates all recorded keys up front,
+    // which releases every recorded pipeline to the compile workers. CS thread only, like GetShaderModule.
+    void GxLoad(const std::string& path);
+
+    void GxPrewarm(D3D9DeviceEx* pDevice);
+
   private:
+
+    template <typename K, typename S>
+    void GxRecord(uint8_t stage, const K& key, S& known);
+
+    std::string   m_gxPath;
+    std::ofstream m_gxFile;
+
+    std::unordered_set<
+      D3D9FFShaderKeyVS,
+      D3D9FFShaderKeyHash, D3D9FFShaderKeyEq> m_gxKnownVS;
+
+    std::unordered_set<
+      D3D9FFShaderKeyFS,
+      D3D9FFShaderKeyHash, D3D9FFShaderKeyEq> m_gxKnownFS;
 
     std::unordered_map<
       D3D9FFShaderKeyVS,

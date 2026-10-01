@@ -9,6 +9,8 @@
 #include "../spirv/spirv_module.h"
 
 #include <cfloat>
+#include <cstdio>
+#include <cstring>
 
 namespace dxvk {
 
@@ -2558,6 +2560,7 @@ namespace dxvk {
       pDevice, ShaderKey);
 
     m_vsModules.insert({ShaderKey, shader});
+    GxRecord(0, ShaderKey, m_gxKnownVS);
 
     return shader;
   }
@@ -2575,8 +2578,104 @@ namespace dxvk {
       pDevice, ShaderKey);
 
     m_fsModules.insert({ShaderKey, shader});
+    GxRecord(1, ShaderKey, m_gxKnownFS);
 
     return shader;
+  }
+
+
+  // GeneralsX A2: <exe>.dxvk-ffkeys = this header, then records of { uint8 stage (0 VS, 1 FS), raw key }. The header
+  // carries both key sizes, so a DXVK whose key layout changed starts a new file instead of misreading the old one.
+  struct D3D9GxFFKeysHeader {
+    char     magic[4]  = { 'G', 'X', 'F', 'F' };
+    uint32_t version   = 1;
+    uint32_t vsKeySize = sizeof(D3D9FFShaderKeyVS);
+    uint32_t fsKeySize = sizeof(D3D9FFShaderKeyFS);
+  };
+
+
+  void D3D9FFShaderModuleSet::GxLoad(const std::string& path) {
+    m_gxPath = path;
+
+    std::ifstream in(str::topath(path.c_str()).c_str(), std::ios_base::binary);
+    D3D9GxFFKeysHeader expected, header;
+
+    if (in.read(reinterpret_cast<char*>(&header), sizeof(header))
+     && !std::memcmp(&header, &expected, sizeof(header))) {
+      uint8_t stage = 0;
+
+      // A torn or foreign tail ends the read; what was read is kept and the rewrite below drops the rest.
+      while (in.read(reinterpret_cast<char*>(&stage), sizeof(stage))) {
+        if (stage == 0) {
+          D3D9FFShaderKeyVS key;
+          if (!in.read(reinterpret_cast<char*>(&key), sizeof(key)))
+            break;
+          m_gxKnownVS.insert(key);
+        } else if (stage == 1) {
+          D3D9FFShaderKeyFS key;
+          if (!in.read(reinterpret_cast<char*>(&key), sizeof(key)))
+            break;
+          m_gxKnownFS.insert(key);
+        } else {
+          break;
+        }
+      }
+    }
+
+    in.close();
+
+    // Rewritten whole on every load: deduplicated, and a torn tail cannot misalign the appends that follow.
+    // ponytail: two games sharing one cache dir at once can interleave appends; the next load keeps the clean prefix.
+    m_gxFile.open(str::topath(path.c_str()).c_str(), std::ios_base::binary | std::ios_base::trunc);
+
+    if (!m_gxFile)
+      return;
+
+    m_gxFile.write(reinterpret_cast<const char*>(&expected), sizeof(expected));
+
+    for (const auto& key : m_gxKnownVS) {
+      const uint8_t stage = 0;
+      m_gxFile.write(reinterpret_cast<const char*>(&stage), sizeof(stage));
+      m_gxFile.write(reinterpret_cast<const char*>(&key), sizeof(key));
+    }
+
+    for (const auto& key : m_gxKnownFS) {
+      const uint8_t stage = 1;
+      m_gxFile.write(reinterpret_cast<const char*>(&stage), sizeof(stage));
+      m_gxFile.write(reinterpret_cast<const char*>(&key), sizeof(key));
+    }
+
+    m_gxFile.flush();
+
+    std::fprintf(stderr, "[GXWARM] dxvk ffkeys loaded vs=%zu fs=%zu file=%s\n",
+      m_gxKnownVS.size(), m_gxKnownFS.size(), path.c_str());
+  }
+
+
+  void D3D9FFShaderModuleSet::GxPrewarm(D3D9DeviceEx* pDevice) {
+    const size_t vs = m_vsModules.size();
+    const size_t fs = m_fsModules.size();
+
+    // GetShaderModule -> GxRecord finds each key already known, so neither set changes while it is walked.
+    for (const auto& key : m_gxKnownVS)
+      GetShaderModule(pDevice, key);
+
+    for (const auto& key : m_gxKnownFS)
+      GetShaderModule(pDevice, key);
+
+    std::fprintf(stderr, "[GXWARM] dxvk prewarm generated vs=%zu fs=%zu (of %zu/%zu known)\n",
+      m_vsModules.size() - vs, m_fsModules.size() - fs, m_gxKnownVS.size(), m_gxKnownFS.size());
+  }
+
+
+  template <typename K, typename S>
+  void D3D9FFShaderModuleSet::GxRecord(uint8_t stage, const K& key, S& known) {
+    if (m_gxPath.empty() || !known.insert(key).second || !m_gxFile)
+      return;
+
+    m_gxFile.write(reinterpret_cast<const char*>(&stage), sizeof(stage));
+    m_gxFile.write(reinterpret_cast<const char*>(&key), sizeof(key));
+    m_gxFile.flush();
   }
 
 
