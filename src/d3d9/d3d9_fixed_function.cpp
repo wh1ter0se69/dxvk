@@ -2601,6 +2601,7 @@ namespace dxvk {
     const auto file = str::topath(path.c_str());
     D3D9GxFFKeysHeader expected, header;
     std::streamoff good = 0;   // the end of the last whole record
+    bool torn = false;         // the read stopped on a partial or foreign record, not at a clean end
 
     { std::ifstream in(file.c_str(), std::ios_base::binary);
 
@@ -2611,6 +2612,7 @@ namespace dxvk {
 
         // A torn or foreign tail ends the read; the file is cut back to the last whole record below.
         while (in.read(reinterpret_cast<char*>(&stage), sizeof(stage))) {
+          torn = true;
           if (stage == 0) {
             D3D9FFShaderKeyVS key;
             if (!in.read(reinterpret_cast<char*>(&key), sizeof(key)))
@@ -2624,6 +2626,7 @@ namespace dxvk {
           } else {
             break;
           }
+          torn = false;
           good = in.tellg();
         }
       }
@@ -2642,7 +2645,11 @@ namespace dxvk {
         init.open(file.c_str(), std::ios_base::binary | std::ios_base::trunc);
 
       init.write(reinterpret_cast<const char*>(&expected), sizeof(expected));
-    } else if (std::filesystem::file_size(std::filesystem::path(file), ec) > uintmax_t(good)) {
+    } else if (torn) {
+      // Only a torn tail is cut, never a file that merely grew: a record another device or game appended after this
+      // read reached the end is whole and stays (Codex r3).
+      // ponytail: a writer that appends after a torn tail, in the instant before this cut, loses that record; it is
+      // re-recorded the next time its key is first drawn.
       std::filesystem::resize_file(std::filesystem::path(file), uintmax_t(good), ec);
     }
 
