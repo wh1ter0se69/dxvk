@@ -7972,10 +7972,22 @@ namespace dxvk {
       auto WorldView    = m_state.transforms[GetTransformIndex(D3DTS_VIEW)] * m_state.transforms[GetTransformIndex(D3DTS_WORLD)];
       auto NormalMatrix = inverse(WorldView);
 
+      // GeneralsX FF: InverseView and the view-space lights depend only on View and the lights, not on World. Rebuild
+      // them only when those inputs' bits change (m_ffViewCache); same functions of the same bits, so the same bytes.
+      const Matrix4& view = m_state.transforms[GetTransformIndex(D3DTS_VIEW)];
+      D3D9FFViewCache& vc = m_ffViewCache;
+
+      if (!vc.valid || std::memcmp(&vc.view, &view, sizeof(Matrix4)) != 0) {
+        vc.valid       = true;
+        vc.view        = view;
+        vc.inverseView = transpose(inverse(view));
+        vc.lightCount  = 0;
+      }
+
       D3D9FixedFunctionVS* data = reinterpret_cast<D3D9FixedFunctionVS*>(mapPtr);
       data->WorldView    = WorldView;
       data->NormalMatrix = NormalMatrix;
-      data->InverseView  = transpose(inverse(m_state.transforms[GetTransformIndex(D3DTS_VIEW)]));
+      data->InverseView  = vc.inverseView;
       data->Projection   = m_state.transforms[GetTransformIndex(D3DTS_PROJECTION)];
 
       for (uint32_t i = 0; i < data->TexcoordMatrices.size(); i++)
@@ -7991,8 +8003,18 @@ namespace dxvk {
         if (idx == std::numeric_limits<uint32_t>::max())
           continue;
 
-        data->Lights[lightIdx++] = D3D9Light(m_state.lights[idx].value(), m_state.transforms[GetTransformIndex(D3DTS_VIEW)]);
+        const D3DLIGHT9& light = m_state.lights[idx].value();
+
+        if (lightIdx >= vc.lightCount || std::memcmp(&vc.lightSrc[lightIdx], &light, sizeof(D3DLIGHT9)) != 0) {
+          vc.lightSrc[lightIdx] = light;
+          vc.lights[lightIdx]   = D3D9Light(light, view);
+        }
+
+        data->Lights[lightIdx] = vc.lights[lightIdx];
+        lightIdx++;
       }
+
+      vc.lightCount = std::max(vc.lightCount, lightIdx);
 
       data->Material = m_state.material;
       data->TweenFactor = bit::cast<float>(m_state.renderStates[D3DRS_TWEENFACTOR]);
