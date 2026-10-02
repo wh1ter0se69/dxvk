@@ -1592,6 +1592,7 @@ namespace dxvk {
     // comparison rather than by dirty flags, so no setter, state block or Reset path can leave it stale.
     struct D3D9FFViewCache {
       bool                                          valid      = false;
+      uint64_t                                      fpControl  = 0;  // gxFPControl() the cached values were computed under
       Matrix4                                       view;
       Matrix4                                       inverseView;
       uint32_t                                      lightCount = 0;  // slots [0, lightCount) were built from `view`
