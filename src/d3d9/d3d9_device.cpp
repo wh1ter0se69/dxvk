@@ -5869,10 +5869,12 @@ namespace dxvk {
       DxsoConstantBuffers::VSClipPlanes,
       caps::MaxClipPlanes * sizeof(D3D9ClipPlane));
 
+    // GeneralsX FF: streamed like the programmable VS constants above (Alloc per upload from a 1 MB buffer), not
+    // renamed per upload - see UpdateFixedFunctionVS.
     m_vsFixedFunction = D3D9ConstantBuffer(this,
       DxsoProgramType::VertexShader,
       DxsoConstantBuffers::VSFixedFunction,
-      sizeof(D3D9FixedFunctionVS));
+      DefaultConstantBufferSize);
 
     m_psFixedFunction = D3D9ConstantBuffer(this,
       DxsoProgramType::PixelShader,
@@ -7960,7 +7962,12 @@ namespace dxvk {
     if (m_flags.test(D3D9DeviceFlag::DirtyFFVertexData)) {
       m_flags.clr(D3D9DeviceFlag::DirtyFFVertexData);
 
-      auto mapPtr = m_vsFixedFunction.AllocSlice();
+      // GeneralsX FF: sub-allocate, never AllocSlice. AllocSlice took a NEW buffer storage from DxvkMemoryAllocator for
+      // every upload, i.e. for nearly every draw that sets its own world matrix; on a zoomed-out 6v6 (~17k such draws a
+      // frame) that allocator mutex was contended and ~2/3 of this function's time (Mini profile, 02/10/2026). Alloc
+      // takes one storage per ~500 uploads and binds a range, as UploadConstantSet already does; upstream 3.0 does the
+      // same for these constants. The bytes written are unchanged.
+      auto mapPtr = m_vsFixedFunction.Alloc(sizeof(D3D9FixedFunctionVS));
 
       auto WorldView    = m_state.transforms[GetTransformIndex(D3DTS_VIEW)] * m_state.transforms[GetTransformIndex(D3DTS_WORLD)];
       auto NormalMatrix = inverse(WorldView);
