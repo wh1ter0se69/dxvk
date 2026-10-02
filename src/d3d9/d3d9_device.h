@@ -1587,6 +1587,18 @@ namespace dxvk {
 
     D3D9ViewportInfo                m_viewportInfo;
 
+    // GeneralsX FF: the view-dependent part of D3D9FixedFunctionVS (InverseView and the view-space lights), keyed on
+    // the BITS of View and of each enabled D3DLIGHT9, so a draw that only changes the world matrix reuses it. Keyed by
+    // comparison rather than by dirty flags, so no setter, state block or Reset path can leave it stale.
+    struct D3D9FFViewCache {
+      bool                                          valid      = false;
+      Matrix4                                       view;
+      Matrix4                                       inverseView;
+      uint32_t                                      lightCount = 0;  // slots [0, lightCount) were built from `view`
+      std::array<D3DLIGHT9, caps::MaxEnabledLights> lightSrc   = {};
+      std::array<D3D9Light, caps::MaxEnabledLights> lights;
+    }                               m_ffViewCache;
+
     DxvkCsChunkPool                 m_csChunkPool;
     DxvkCsThread                    m_csThread;
     DxvkCsChunkRef                  m_csChunk;

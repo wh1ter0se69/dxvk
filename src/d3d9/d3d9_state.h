@@ -81,6 +81,8 @@ namespace dxvk {
   };
 
   struct D3D9Light {
+    D3D9Light() = default;  // GeneralsX FF: storage for D3D9DeviceEx's view cache
+
     D3D9Light(const D3DLIGHT9& light, Matrix4 viewMtx)
       : Diffuse      ( Vector4(light.Diffuse.r,  light.Diffuse.g,  light.Diffuse.b,  light.Diffuse.a) )
       , Specular     ( Vector4(light.Specular.r, light.Specular.g, light.Specular.b, light.Specular.a) )
