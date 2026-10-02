@@ -31,6 +31,32 @@
 #pragma fenv_access (on)
 #endif
 
+// GeneralsX FF: the floating-point CONTROL state the cached values were computed under (rounding, flush-to-zero /
+// denormals-are-zero, x87 precision) - never the sticky status flags, which change on every operation.
+#if defined(__aarch64__) || defined(_M_ARM64)
+  #if defined(_MSC_VER) && !defined(__clang__)
+    #include <intrin.h>
+    static inline uint64_t gxFPControl() { return uint64_t(_ReadStatusReg(ARM64_FPCR)); }
+  #else
+    static inline uint64_t gxFPControl() { uint64_t v; __asm__ volatile("mrs %0, fpcr" : "=r"(v)); return v; }
+  #endif
+#elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+  #include <xmmintrin.h>
+  #if defined(_MSC_VER) && !defined(__clang__)
+    #include <float.h>
+    #if defined(_M_IX86)	// _control87 merges the x87 and SSE fields on x86 (Codex r3): read the x87 word on its own
+      static inline uint64_t gxFPControl() { unsigned int x87 = 0, sse = 0; __control87_2(0, 0, &x87, &sse); return (uint64_t(x87) << 32) | (_mm_getcsr() & ~0x3Fu); }
+    #else
+      static inline uint64_t gxFPControl() { return (uint64_t(_control87(0, 0)) << 32) | (_mm_getcsr() & ~0x3Fu); }
+    #endif
+  #else
+    static inline uint64_t gxFPControl() { uint16_t cw; __asm__ volatile("fnstcw %0" : "=m"(cw)); return (uint64_t(cw) << 32) | (_mm_getcsr() & ~0x3Fu); }
+  #endif
+#else
+  #include <cfenv>
+  static inline uint64_t gxFPControl() { return uint64_t(std::fegetround()); }
+#endif
+
 namespace dxvk {
 
   // GeneralsX A2: the live devices, newest last, for the GXDXVK_WarmPipelines export. The export holds the lock for its
@@ -7977,8 +8003,13 @@ namespace dxvk {
       const Matrix4& view = m_state.transforms[GetTransformIndex(D3DTS_VIEW)];
       D3D9FFViewCache& vc = m_ffViewCache;
 
-      if (!vc.valid || std::memcmp(&vc.view, &view, sizeof(Matrix4)) != 0) {
+      // The FP control state is an input too (Codex r1/r2): an app on D3DCREATE_FPU_PRESERVE may change rounding or
+      // flush-to-zero between uploads, and stock code would recompute under the new state.
+      const uint64_t fpControl = gxFPControl();
+
+      if (!vc.valid || vc.fpControl != fpControl || std::memcmp(&vc.view, &view, sizeof(Matrix4)) != 0) {
         vc.valid       = true;
+        vc.fpControl   = fpControl;
         vc.view        = view;
         vc.inverseView = transpose(inverse(view));
         vc.lightCount  = 0;
