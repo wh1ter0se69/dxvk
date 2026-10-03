@@ -33,14 +33,16 @@
 
 // GeneralsX FF: the floating-point CONTROL state the cached values were computed under (rounding, flush-to-zero /
 // denormals-are-zero, x87 precision) - never the sticky status flags, which change on every operation.
-#if defined(__aarch64__) || defined(_M_ARM64)
+// The architecture is util_bit.h's (included above): clang ARM64EC defines __x86_64__ / _M_X64 too, and its x87 asm
+// does not assemble there, so ARM64EC must take the AArch64 reader (Codex dxvk-ffc-lead-r5 P2).
+#if defined(DXVK_ARCH_ARM64)
   #if defined(_MSC_VER) && !defined(__clang__)
     #include <intrin.h>
     static inline uint64_t gxFPControl() { return uint64_t(_ReadStatusReg(ARM64_FPCR)); }
   #else
     static inline uint64_t gxFPControl() { uint64_t v; __asm__ volatile("mrs %0, fpcr" : "=r"(v)); return v; }
   #endif
-#elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+#elif defined(DXVK_ARCH_X86) && !defined(__e2k__)
   #include <xmmintrin.h>
   #if defined(_MSC_VER) && !defined(__clang__)
     #include <float.h>
