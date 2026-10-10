@@ -3,6 +3,7 @@
 #include "d3d9_common_texture.h"
 #include "d3d9_device.h"
 #include "d3d9_texture.h"
+#include "d3d9_surface.h"
 #include "d3d9_buffer.h"
 #include "d3d9_initializer.h"
 
@@ -111,6 +112,11 @@ namespace dxvk {
           VkImageLayout*        pLayout,
           VkImageCreateInfo*    pInfo) {
     const Rc<DxvkImage> image = m_texture->GetImage();
+
+    // GeneralsX: SYSTEMMEM / SCRATCH / NULL-format resources have no image
+    if (image == nullptr)
+      return D3DERR_INVALIDCALL;
+
     const DxvkImageCreateInfo& info = image->info();
     
     if (pHandle != nullptr)
@@ -362,6 +368,207 @@ namespace dxvk {
       Logger::err(e.message());
       return D3DERR_OUTOFVIDEOMEMORY;
     }
+  }
+
+
+  ////////////////////////////////
+  // GeneralsX external recording
+  ///////////////////////////////
+
+  namespace {
+
+    DxvkGxImage GxDescribe(const Rc<DxvkImageView>& view) {
+      DxvkGxImage result = { };
+
+      if (view == nullptr)
+        return result;
+
+      const Rc<DxvkImage>& image = view->image();
+      result.image   = image->handle();
+      result.view    = view->handle();
+      result.format  = view->info().format;
+      result.samples = image->info().sampleCount;
+      result.extent  = image->mipLevelExtent(view->info().mipIndex);
+      result.range   = view->imageSubresources();
+      result.layout  = image->info().layout;
+      result.stages  = image->info().stages;
+      result.access  = image->info().access;
+      return result;
+    }
+
+  }
+
+
+  D3D9GxExternal::D3D9GxExternal(
+          D3D9DeviceEx*         pInterface)
+    : m_device  (pInterface)
+    , m_retired (new sync::Fence())
+    , m_newEpoch(env::getEnvVar("DXVK_GX_NEW_EPOCH") == "1") {
+    // DXVK_GX_NEW_EPOCH=1 is a TEST-ONLY fail arm: the stock beginExternalRendering, whose new
+    // tracking epoch lets a later upload be hoisted above earlier external draws.
+    if (m_newEpoch)
+      Logger::warn("D3D9GxExternal: DXVK_GX_NEW_EPOCH=1 (fail arm) - external commands start a new tracking epoch");
+  }
+
+  D3D9GxExternal::~D3D9GxExternal() {
+
+  }
+
+  ULONG STDMETHODCALLTYPE D3D9GxExternal::AddRef() {
+    return m_device->AddRef();
+  }
+
+  ULONG STDMETHODCALLTYPE D3D9GxExternal::Release() {
+    return m_device->Release();
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9GxExternal::QueryInterface(
+          REFIID                riid,
+          void**                ppvObject) {
+    return m_device->QueryInterface(riid, ppvObject);
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9GxExternal::GetDeviceInfo(
+          DxvkGxDeviceInfo*     pInfo) {
+    if (pInfo == nullptr)
+      return D3DERR_INVALIDCALL;
+
+    Rc<DxvkDevice> device = m_device->GetDXVKDevice();
+    const DxvkDeviceFeatures& features = device->features();
+
+    *pInfo = DxvkGxDeviceInfo();
+    pInfo->getInstanceProcAddr = device->adapter()->vki()->getLoaderProc();
+    pInfo->instance            = device->instance()->handle();
+    pInfo->physicalDevice      = device->adapter()->handle();
+    pInfo->device              = device->handle();
+    pInfo->queueFamily         = device->queues().graphics.queueFamily;
+    pInfo->apiVersion          = VK_MAKE_API_VERSION(0, 1, 3, 0);
+    pInfo->dynamicRendering    = features.vk13.dynamicRendering;
+    pInfo->synchronization2    = features.vk13.synchronization2;
+    pInfo->timelineSemaphore   = features.vk12.timelineSemaphore;
+    return D3D_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9GxExternal::RecordExternal(
+          UINT                      ReadCount,
+          ID3D9VkInteropTexture* const* ppReads,
+          PFN_DxvkGxRecord          pfnRecord,
+          void*                     pUser,
+          UINT64                    RetireValue) {
+    constexpr UINT MaxReads = 16u;
+
+    if (pfnRecord == nullptr || ReadCount > MaxReads || (ReadCount && ppReads == nullptr))
+      return D3DERR_INVALIDCALL;
+
+    D3D9DeviceLock lock = m_device->LockDevice();
+
+    // DXVK's own attachment views - the formats, aspects and view types its framebuffer uses
+    // (D3D8 has no sRGB write state, so the non-sRGB view is the bound one).
+    D3D9Surface* rt = m_device->m_state.renderTargets[0].ptr();
+    D3D9Surface* ds = m_device->m_state.depthStencil.ptr();
+
+    if (rt == nullptr || rt->GetCommonTexture()->GetImage() == nullptr)
+      return D3DERR_INVALIDCALL;
+
+    Rc<DxvkImageView> colour = rt->GetRenderTargetView(false);
+    Rc<DxvkImageView> depth  = (ds != nullptr && ds->GetCommonTexture()->GetImage() != nullptr) ? ds->GetDepthStencilView() : nullptr;
+
+    if (colour == nullptr)
+      return D3DERR_INVALIDCALL;
+
+    // A colour target and a depth surface of different sample counts cannot form one
+    // rendering instance (the water reflection binds a 1x target over the MSAA depth,
+    // and DXVK drops that depth too, d3d9_device.cpp:6781).
+    if (depth != nullptr && depth->image()->info().sampleCount != colour->image()->info().sampleCount)
+      return D3DERR_INVALIDCALL;
+
+    std::array<Rc<DxvkImageView>, MaxReads> reads;
+
+    for (UINT i = 0; i < ReadCount; i++) {
+      D3D9CommonTexture* texture = ppReads[i] != nullptr
+        ? static_cast<D3D9VkInteropTexture*>(ppReads[i])->GetCommonTexture()
+        : nullptr;
+
+      if (texture == nullptr || texture->GetImage() == nullptr)
+        return D3DERR_INVALIDCALL;
+
+      // A texture that is also an attachment of this instance would be a feedback loop:
+      // refused, the caller keeps that mesh classic.
+      if (texture->GetImage() == colour->image() || (depth != nullptr && texture->GetImage() == depth->image()))
+        return D3DERR_INVALIDCALL;
+
+      // What PrepareDraw would have done for a bound MANAGED texture: pending
+      // uploads go into the CS stream ahead of the recorder.
+      if (texture->IsManaged() && texture->NeedsAnyUpload())
+        texture->PreLoadAll();
+
+      // DXVK's own sampling view: its format, swizzle (X8R8G8B8 reads alpha as one) and view type.
+      reads[i] = texture->GetSampleView(false);
+    }
+
+    m_device->EmitCs([
+      cColour   = std::move(colour),
+      cDepth    = std::move(depth),
+      cReads    = std::move(reads),
+      cCount    = ReadCount,
+      cRecord   = pfnRecord,
+      cUser     = pUser,
+      cRetire   = RetireValue,
+      cRetired  = m_retired,
+      cNewEpoch = m_newEpoch
+    ] (DxvkContext* ctx) {
+      // In the current recording epoch (see beginGxExternalCommands): DXVK's pass ends,
+      // attachments return to their default layouts, pending barriers are recorded, and
+      // DXVK re-binds all of its state after us.
+      DxvkContextObjects objects;
+
+      if (unlikely(cNewEpoch)) {
+        VkImageLayout layout = cColour->image()->info().layout;
+        ctx->transformImage(cColour->image(), cColour->image()->getAvailableSubresources(), layout, layout);
+        objects = ctx->beginExternalRendering();
+      } else {
+        objects = ctx->beginGxExternalCommands();
+      }
+
+      std::array<DxvkGxImage, MaxReads> readInfo = { };
+
+      for (uint32_t i = 0; i < cCount; i++)
+        readInfo[i] = GxDescribe(cReads[i]);
+
+      DxvkGxRecordInfo info = { };
+      info.cmd       = objects.cmd->getExecCmdBuffer();
+      info.colour    = GxDescribe(cColour);
+      info.depth     = GxDescribe(cDepth);
+      info.readCount = cCount;
+      info.reads     = readInfo.data();
+
+      cRecord(&info, cUser);
+
+      // Lifetime, CPU-access tracking and the implicit-resolve cache of what we wrote.
+      objects.cmd->track(cColour);
+      objects.cmd->track(cColour->image(), DxvkAccess::Write);
+      ctx->notifyGxExternalWrite(cColour);
+
+      if (cDepth != nullptr) {
+        objects.cmd->track(cDepth);
+        objects.cmd->track(cDepth->image(), DxvkAccess::Write);
+        ctx->notifyGxExternalWrite(cDepth);
+      }
+
+      for (uint32_t i = 0; i < cCount; i++) {
+        objects.cmd->track(cReads[i]);
+        objects.cmd->track(cReads[i]->image(), DxvkAccess::Read);
+      }
+
+      if (cRetire != 0u)
+        ctx->signal(cRetired, cRetire);
+    });
+
+    return D3D_OK;
+  }
+
+  UINT64 STDMETHODCALLTYPE D3D9GxExternal::GetRetiredValue() {
+    return m_retired->value();
   }
 
 }
