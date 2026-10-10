@@ -286,6 +286,16 @@ namespace dxvk {
     void next();
     
     /**
+     * \brief GeneralsX: raw execution command buffer for external recording
+     *
+     * Only for code that records foreign commands between
+     * DxvkContext::beginExternalRendering and the next DXVK command.
+     */
+    VkCommandBuffer getExecCmdBuffer() const {
+      return getCmdBuffer();
+    }
+
+    /**
      * \brief Tracks an object
      *
      * Keeps the object alive until the command list finishes

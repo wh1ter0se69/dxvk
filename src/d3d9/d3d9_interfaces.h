@@ -249,6 +249,98 @@ ID3D9VkInteropDevice : public IUnknown {
 };
 
 /**
+ * \brief GeneralsX: one image as DXVK holds it when the external recorder runs
+ *
+ * \c layout, \c stages and \c access are DXVK's default ("available to") state of the
+ * image: it is in \c layout on entry, and the recorder must return it to \c layout with
+ * its writes made available to \c stages / \c access before it returns. \c image is
+ * VK_NULL_HANDLE when no such attachment is bound.
+ */
+struct DxvkGxImage {
+  VkImage                 image;
+  VkImageView             view;
+  VkFormat                format;
+  VkSampleCountFlagBits   samples;
+  VkExtent3D              extent;
+  VkImageSubresourceRange range;
+  VkImageLayout           layout;
+  VkPipelineStageFlags    stages;
+  VkAccessFlags           access;
+};
+
+/**
+ * \brief GeneralsX: what the external recorder gets
+ *
+ * \c cmd is DXVK's own execution command buffer, outside any render pass, recorded
+ * in D3D order between the draws issued before and after RecordExternal. The recorder
+ * records only into \c cmd, makes no D3D call and does not submit.
+ */
+struct DxvkGxRecordInfo {
+  VkCommandBuffer         cmd;
+  DxvkGxImage             colour;
+  DxvkGxImage             depth;
+  uint32_t                readCount;
+  const DxvkGxImage*      reads;
+};
+
+typedef void (*PFN_DxvkGxRecord)(const DxvkGxRecordInfo* pInfo, void* pUser);
+
+/**
+ * \brief GeneralsX: DXVK's own Vulkan entry and what it enabled
+ */
+struct DxvkGxDeviceInfo {
+  PFN_vkGetInstanceProcAddr getInstanceProcAddr;
+  VkInstance              instance;
+  VkPhysicalDevice        physicalDevice;
+  VkDevice                device;
+  uint32_t                queueFamily;
+  uint32_t                apiVersion;
+  VkBool32                dynamicRendering;
+  VkBool32                synchronization2;
+  VkBool32                timelineSemaphore;
+};
+
+/**
+ * \brief GeneralsX: record foreign Vulkan commands inside DXVK's command list
+ *
+ * The declaration is mirrored by the game (GXRender/Interop/GxDxvkExternal.h);
+ * any change to it takes a new IID.
+ */
+MIDL_INTERFACE("703eff92-9fbc-4fce-a0aa-ed0a25773e95")
+IDxvkGxExternal : public IUnknown {
+  /**
+   * \brief DXVK's loader entry point, handles, queue family and enabled features
+   */
+  virtual HRESULT STDMETHODCALLTYPE GetDeviceInfo(
+          DxvkGxDeviceInfo*         pInfo) = 0;
+
+  /**
+   * \brief Runs \c pfnRecord on DXVK's CS thread, in D3D order
+   *
+   * Ends DXVK's render pass with every attachment back in its default layout,
+   * uploads pending MANAGED data of the read textures first, hands the recorder
+   * DXVK's command buffer plus the current colour target 0, the depth-stencil
+   * surface and the read textures, then keeps all of them alive on DXVK's command
+   * list. \c pfnRecord is called exactly once, later, on another thread; \c pUser
+   * must stay valid until then. A non-zero \c RetireValue is signalled once the
+   * GPU has finished the command list (see GetRetiredValue).
+   * \returns D3DERR_INVALIDCALL when no colour target is bound, the colour and depth
+   *          sample counts differ, or a read texture has no image
+   */
+  virtual HRESULT STDMETHODCALLTYPE RecordExternal(
+          UINT                      ReadCount,
+          ID3D9VkInteropTexture* const* ppReads,
+          PFN_DxvkGxRecord          pfnRecord,
+          void*                     pUser,
+          UINT64                    RetireValue) = 0;
+
+  /**
+   * \brief Highest RetireValue whose command list the GPU has finished
+   */
+  virtual UINT64 STDMETHODCALLTYPE GetRetiredValue() = 0;
+};
+
+/**
  * \brief D3D9 current output metadata
  */
 struct D3D9VkExtOutputMetadata {
@@ -287,4 +379,5 @@ __CRT_UUID_DECL(ID3D9VkInteropInterface1,  0xd6589ed4,0x7a37,0x4096,0xba,0xc2,0x
 __CRT_UUID_DECL(ID3D9VkInteropTexture,     0xd56344f5,0x8d35,0x46fd,0x80,0x6d,0x94,0xc3,0x51,0xb4,0x72,0xc1);
 __CRT_UUID_DECL(ID3D9VkInteropDevice,      0x2eaa4b89,0x0107,0x4bdb,0x87,0xf7,0x0f,0x54,0x1c,0x49,0x3c,0xe0);
 __CRT_UUID_DECL(ID3D9VkExtSwapchain,       0x13776e93,0x4aa9,0x430a,0xa4,0xec,0xfe,0x9e,0x28,0x11,0x81,0xd5);
+__CRT_UUID_DECL(IDxvkGxExternal,           0x703eff92,0x9fbc,0x4fce,0xa0,0xaa,0xed,0x0a,0x25,0x77,0x3e,0x95);
 #endif

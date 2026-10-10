@@ -3,6 +3,7 @@
 #include "d3d9_common_texture.h"
 #include "d3d9_device.h"
 #include "d3d9_texture.h"
+#include "d3d9_surface.h"
 #include "d3d9_buffer.h"
 #include "d3d9_initializer.h"
 
@@ -111,6 +112,11 @@ namespace dxvk {
           VkImageLayout*        pLayout,
           VkImageCreateInfo*    pInfo) {
     const Rc<DxvkImage> image = m_texture->GetImage();
+
+    // GeneralsX: SYSTEMMEM / SCRATCH / NULL-format resources have no image
+    if (image == nullptr)
+      return D3DERR_INVALIDCALL;
+
     const DxvkImageCreateInfo& info = image->info();
     
     if (pHandle != nullptr)
@@ -362,6 +368,214 @@ namespace dxvk {
       Logger::err(e.message());
       return D3DERR_OUTOFVIDEOMEMORY;
     }
+  }
+
+
+  ////////////////////////////////
+  // GeneralsX external recording
+  ///////////////////////////////
+
+  namespace {
+
+    // An image as the CS lambda captures it: the view is resolved on the CS thread,
+    // inside the command list that uses it, so a relocation can never be seen half-way.
+    struct GxCapturedImage {
+      Rc<DxvkImage>    image;
+      DxvkImageViewKey key;
+    };
+
+    GxCapturedImage GxCaptureSurface(D3D9Surface* pSurface, VkImageUsageFlags usage) {
+      GxCapturedImage result = { };
+
+      if (pSurface == nullptr)
+        return result;
+
+      D3D9CommonTexture* texture = pSurface->GetCommonTexture();
+      result.image = texture->GetImage();
+
+      if (result.image == nullptr)
+        return result;
+
+      result.key.viewType   = VK_IMAGE_VIEW_TYPE_2D;
+      result.key.usage      = usage;
+      result.key.format     = result.image->info().format;
+      result.key.aspects    = lookupFormatInfo(result.key.format)->aspectMask;
+      result.key.mipIndex   = pSurface->GetMipLevel();
+      result.key.mipCount   = 1u;
+      result.key.layerIndex = pSurface->GetFace();
+      result.key.layerCount = 1u;
+      return result;
+    }
+
+    DxvkGxImage GxDescribe(const Rc<DxvkImageView>& view) {
+      DxvkGxImage result = { };
+
+      if (view == nullptr)
+        return result;
+
+      const Rc<DxvkImage>& image = view->image();
+      result.image   = image->handle();
+      result.view    = view->handle();
+      result.format  = view->info().format;
+      result.samples = image->info().sampleCount;
+      result.extent  = image->mipLevelExtent(view->info().mipIndex);
+      result.range   = view->imageSubresources();
+      result.layout  = image->info().layout;
+      result.stages  = image->info().stages;
+      result.access  = image->info().access;
+      return result;
+    }
+
+  }
+
+
+  D3D9GxExternal::D3D9GxExternal(
+          D3D9DeviceEx*         pInterface)
+    : m_device  (pInterface)
+    , m_retired (new sync::Fence()) {
+
+  }
+
+  D3D9GxExternal::~D3D9GxExternal() {
+
+  }
+
+  ULONG STDMETHODCALLTYPE D3D9GxExternal::AddRef() {
+    return m_device->AddRef();
+  }
+
+  ULONG STDMETHODCALLTYPE D3D9GxExternal::Release() {
+    return m_device->Release();
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9GxExternal::QueryInterface(
+          REFIID                riid,
+          void**                ppvObject) {
+    return m_device->QueryInterface(riid, ppvObject);
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9GxExternal::GetDeviceInfo(
+          DxvkGxDeviceInfo*     pInfo) {
+    if (pInfo == nullptr)
+      return D3DERR_INVALIDCALL;
+
+    Rc<DxvkDevice> device = m_device->GetDXVKDevice();
+    const DxvkDeviceFeatures& features = device->features();
+
+    *pInfo = DxvkGxDeviceInfo();
+    pInfo->getInstanceProcAddr = device->adapter()->vki()->getLoaderProc();
+    pInfo->instance            = device->instance()->handle();
+    pInfo->physicalDevice      = device->adapter()->handle();
+    pInfo->device              = device->handle();
+    pInfo->queueFamily         = device->queues().graphics.queueFamily;
+    pInfo->apiVersion          = VK_MAKE_API_VERSION(0, 1, 3, 0);
+    pInfo->dynamicRendering    = features.vk13.dynamicRendering;
+    pInfo->synchronization2    = features.vk13.synchronization2;
+    pInfo->timelineSemaphore   = features.vk12.timelineSemaphore;
+    return D3D_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9GxExternal::RecordExternal(
+          UINT                      ReadCount,
+          ID3D9VkInteropTexture* const* ppReads,
+          PFN_DxvkGxRecord          pfnRecord,
+          void*                     pUser,
+          UINT64                    RetireValue) {
+    constexpr UINT MaxReads = 16u;
+
+    if (pfnRecord == nullptr || ReadCount > MaxReads || (ReadCount && ppReads == nullptr))
+      return D3DERR_INVALIDCALL;
+
+    D3D9DeviceLock lock = m_device->LockDevice();
+
+    GxCapturedImage colour = GxCaptureSurface(m_device->m_state.renderTargets[0].ptr(), VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    GxCapturedImage depth  = GxCaptureSurface(m_device->m_state.depthStencil.ptr(),     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+
+    if (colour.image == nullptr)
+      return D3DERR_INVALIDCALL;
+
+    // A colour target and a depth surface of different sample counts cannot form one
+    // rendering instance (the water reflection binds a 1x target over the MSAA depth).
+    if (depth.image != nullptr && depth.image->info().sampleCount != colour.image->info().sampleCount)
+      return D3DERR_INVALIDCALL;
+
+    std::array<Rc<DxvkImageView>, MaxReads> reads;
+
+    for (UINT i = 0; i < ReadCount; i++) {
+      D3D9CommonTexture* texture = ppReads[i] != nullptr
+        ? static_cast<D3D9VkInteropTexture*>(ppReads[i])->GetCommonTexture()
+        : nullptr;
+
+      if (texture == nullptr || texture->GetImage() == nullptr)
+        return D3DERR_INVALIDCALL;
+
+      // What PrepareDraw would have done for a bound MANAGED texture: pending
+      // uploads go into the CS stream ahead of the recorder.
+      if (texture->IsManaged() && texture->NeedsAnyUpload())
+        texture->PreLoadAll();
+
+      reads[i] = texture->GetSampleView(false);
+    }
+
+    m_device->EmitCs([
+      cColour   = std::move(colour),
+      cDepth    = std::move(depth),
+      cReads    = std::move(reads),
+      cCount    = ReadCount,
+      cRecord   = pfnRecord,
+      cUser     = pUser,
+      cRetire   = RetireValue,
+      cRetired  = m_retired
+    ] (DxvkContext* ctx) {
+      // transformImage(L -> L) is exactly spillRenderPass(false): DXVK's render pass,
+      // bound or suspended, ends, deferred clears run, and every attachment returns to
+      // its default layout. beginExternalRendering then finalises DXVK's barriers and
+      // marks all of its state dirty, so it re-binds everything after us.
+      VkImageSubresourceRange colourRange = cColour.image->getAvailableSubresources();
+      VkImageLayout colourLayout = cColour.image->info().layout;
+      ctx->transformImage(cColour.image, colourRange, colourLayout, colourLayout);
+
+      DxvkContextObjects objects = ctx->beginExternalRendering();
+
+      Rc<DxvkImageView> colourView = cColour.image->createView(cColour.key);
+      Rc<DxvkImageView> depthView  = cDepth.image != nullptr ? cDepth.image->createView(cDepth.key) : nullptr;
+
+      std::array<DxvkGxImage, MaxReads> readInfo = { };
+
+      for (uint32_t i = 0; i < cCount; i++)
+        readInfo[i] = GxDescribe(cReads[i]);
+
+      DxvkGxRecordInfo info = { };
+      info.cmd       = objects.cmd->getExecCmdBuffer();
+      info.colour    = GxDescribe(colourView);
+      info.depth     = GxDescribe(depthView);
+      info.readCount = cCount;
+      info.reads     = readInfo.data();
+
+      cRecord(&info, cUser);
+
+      objects.cmd->track(colourView);
+      objects.cmd->track(cColour.image, DxvkAccess::Write);
+
+      if (depthView != nullptr) {
+        objects.cmd->track(depthView);
+        objects.cmd->track(cDepth.image, DxvkAccess::Write);
+      }
+
+      for (uint32_t i = 0; i < cCount; i++) {
+        objects.cmd->track(cReads[i]);
+        objects.cmd->track(cReads[i]->image(), DxvkAccess::Read);
+      }
+
+      if (cRetire != 0u)
+        ctx->signal(cRetired, cRetire);
+    });
+
+    return D3D_OK;
+  }
+
+  UINT64 STDMETHODCALLTYPE D3D9GxExternal::GetRetiredValue() {
+    return m_retired->value();
   }
 
 }
