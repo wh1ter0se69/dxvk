@@ -129,6 +129,28 @@ namespace dxvk {
     DxvkContextObjects beginExternalRendering();
 
     /**
+     * \brief GeneralsX: begins foreign commands inside the current recording epoch
+     *
+     * Unlike beginExternalRendering, this keeps the tracking ID: the resource uses
+     * recorded before it keep blocking later out-of-order (init-buffer) transfers, so
+     * a later upload can never be hoisted above an earlier draw. Ends the render pass
+     * with every attachment back in its default layout (deferred clears included),
+     * records pending barriers, and marks all graphics/compute state dirty.
+     * \param [in] testSuspend TEST-ONLY fail arm (DXVK_GX_SUSPEND=1): only suspend the
+     *   pass, so deferred clears stay pending past the external commands
+     */
+    DxvkContextObjects beginGxExternalCommands(bool testSuspend = false);
+
+    /**
+     * \brief GeneralsX: foreign commands wrote these attachment subresources
+     *
+     * Invalidates cached implicit resolves of a multisampled image, as binding it
+     * as a render target for writing does.
+     */
+    void notifyGxExternalWrite(
+      const Rc<DxvkImageView>&          view);
+
+    /**
      * \brief Begins generating query data
      * \param [in] query The query to end
      */
