@@ -170,6 +170,110 @@ namespace dxvk {
   }
 
   
+  DxvkContextObjects DxvkContext::beginGxExternalCommands(bool testSuspend) {
+    this->spillRenderPass(testSuspend);
+    this->flushBarriers();
+
+    // The state the foreign commands may change: everything beginCurrentCommands
+    // marks, without the new tracking epoch it starts.
+    m_flags.clr(
+      DxvkContextFlag::GpXfbActive,
+      DxvkContextFlag::GpIndependentSets);
+
+    m_flags.set(
+      DxvkContextFlag::GpDirtyFramebuffer,
+      DxvkContextFlag::GpDirtyPipeline,
+      DxvkContextFlag::GpDirtyPipelineState,
+      DxvkContextFlag::GpDirtyVertexBuffers,
+      DxvkContextFlag::GpDirtyIndexBuffer,
+      DxvkContextFlag::GpDirtyXfbBuffers,
+      DxvkContextFlag::GpDirtyBlendConstants,
+      DxvkContextFlag::GpDirtyStencilRef,
+      DxvkContextFlag::GpDirtyMultisampleState,
+      DxvkContextFlag::GpDirtyRasterizerState,
+      DxvkContextFlag::GpDirtyViewport,
+      DxvkContextFlag::GpDirtyDepthBias,
+      DxvkContextFlag::GpDirtyDepthBounds,
+      DxvkContextFlag::GpDirtyDepthStencilState,
+      DxvkContextFlag::CpDirtyPipelineState,
+      DxvkContextFlag::DirtyDrawBuffer);
+
+    m_descriptorState.dirtyStages(
+      VK_SHADER_STAGE_ALL_GRAPHICS |
+      VK_SHADER_STAGE_COMPUTE_BIT);
+
+    m_state.gp.pipeline = nullptr;
+    m_state.cp.pipeline = nullptr;
+
+    DxvkContextObjects result;
+    result.cmd = m_cmd;
+    result.descriptorPool = m_descriptorPool;
+    return result;
+  }
+
+
+  bool DxvkContext::beginGxExternalCommandsInPass(DxvkContextObjects& objects,
+    const Rc<DxvkImageView>& colour, const Rc<DxvkImageView>& depth) {
+    // Codex rw1x-design-r10 #1/#2: an inline resolve or discard pending on the pass (NeedsFlush), a framebuffer change
+    // DXVK has not applied yet, or a bound pass whose attachments are not exactly the views D3D selected - the break path.
+    if (!m_flags.test(DxvkContextFlag::GpRenderPassBound)
+     || m_flags.any(DxvkContextFlag::GpXfbActive,
+                    DxvkContextFlag::GpRenderPassNeedsFlush,
+                    DxvkContextFlag::GpDirtyFramebuffer))
+      return false;
+
+    const auto& ri = m_state.om.renderingInfo;
+    VkImageView boundDepth = ri.rendering.pDepthAttachment ? ri.depth.imageView
+                           : ri.rendering.pStencilAttachment ? ri.stencil.imageView : VK_NULL_HANDLE;
+
+    if (colour == nullptr || ri.rendering.colorAttachmentCount != 1
+     || ri.color[0].imageView != colour->handle()
+     || boundDepth != (depth != nullptr ? depth->handle() : VK_NULL_HANDLE))
+      return false;
+
+    // Everything beginGxExternalCommands marks, except the framebuffer: the pass
+    // stays open, so DXVK's next draw continues in it after re-binding its state.
+    m_flags.clr(DxvkContextFlag::GpIndependentSets);
+
+    m_flags.set(
+      DxvkContextFlag::GpDirtyPipeline,
+      DxvkContextFlag::GpDirtyPipelineState,
+      DxvkContextFlag::GpDirtyVertexBuffers,
+      DxvkContextFlag::GpDirtyIndexBuffer,
+      DxvkContextFlag::GpDirtyXfbBuffers,
+      DxvkContextFlag::GpDirtyBlendConstants,
+      DxvkContextFlag::GpDirtyStencilRef,
+      DxvkContextFlag::GpDirtyMultisampleState,
+      DxvkContextFlag::GpDirtyRasterizerState,
+      DxvkContextFlag::GpDirtyViewport,
+      DxvkContextFlag::GpDirtyDepthBias,
+      DxvkContextFlag::GpDirtyDepthBounds,
+      DxvkContextFlag::GpDirtyDepthStencilState,
+      DxvkContextFlag::CpDirtyPipelineState,
+      DxvkContextFlag::DirtyDrawBuffer);
+
+    m_descriptorState.dirtyStages(
+      VK_SHADER_STAGE_ALL_GRAPHICS |
+      VK_SHADER_STAGE_COMPUTE_BIT);
+
+    m_state.gp.pipeline = nullptr;
+    m_state.cp.pipeline = nullptr;
+
+    objects.cmd = m_cmd;
+    objects.descriptorPool = m_descriptorPool;
+    return true;
+  }
+
+
+  void DxvkContext::notifyGxExternalWrite(
+    const Rc<DxvkImageView>&          view) {
+    if (view == nullptr || !view->isMultisampled())
+      return;
+
+    m_implicitResolves.invalidate(*view->image(), view->imageSubresources());
+  }
+
+
   void DxvkContext::beginQuery(const Rc<DxvkQuery>& query) {
     m_queryManager.enableQuery(m_cmd, query);
   }

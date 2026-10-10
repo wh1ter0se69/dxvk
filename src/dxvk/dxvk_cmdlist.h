@@ -286,6 +286,30 @@ namespace dxvk {
     void next();
     
     /**
+     * \brief GeneralsX: raw execution command buffer for external recording
+     *
+     * Only for code that records foreign commands between
+     * DxvkContext::beginGxExternalCommands and the next DXVK command.
+     */
+    VkCommandBuffer getExecCmdBuffer() {
+      // Submission skips an execution buffer nothing marked as used (dxvk_cmdlist.cpp:326);
+      // the external commands recorded through this handle are execution work.
+      m_cmd.execCommands = true;
+      return getCmdBuffer();
+    }
+
+    /**
+     * \brief GeneralsX: raw init command buffer for external uploads
+     *
+     * Submitted before the whole execution buffer of this command list, so an
+     * upload recorded here (with its own barrier at the end) is visible to every
+     * draw in the list - the only place an in-pass draw's data may be uploaded.
+     */
+    VkCommandBuffer getInitCmdBuffer() {
+      return getCmdBuffer(DxvkCmdBuffer::InitBuffer);
+    }
+
+    /**
      * \brief Tracks an object
      *
      * Keeps the object alive until the command list finishes
