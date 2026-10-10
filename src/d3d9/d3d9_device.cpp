@@ -94,6 +94,7 @@ namespace dxvk {
     , m_submissionFence    ( new sync::Fence() )
     , m_flushTracker       ( GetMaxFlushType() )
     , m_d3d9Interop        ( this )
+    , m_gxExternal         ( this )
     , m_d3d9On12           ( this )
     , m_d3d8Bridge         ( this ) {
     // If we can SWVP, then we use an extended constant set
@@ -327,6 +328,11 @@ namespace dxvk {
 
     if (riid == __uuidof(ID3D9VkInteropDevice)) {
       *ppvObject = ref(&m_d3d9Interop);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(IDxvkGxExternal)) {
+      *ppvObject = ref(&m_gxExternal);
       return S_OK;
     }
 
