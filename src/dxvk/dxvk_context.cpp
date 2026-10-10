@@ -170,6 +170,96 @@ namespace dxvk {
   }
 
   
+  DxvkContextObjects DxvkContext::beginGxExternalCommands(bool testSuspend) {
+    this->spillRenderPass(testSuspend);
+    this->flushBarriers();
+
+    // The state the foreign commands may change: everything beginCurrentCommands
+    // marks, without the new tracking epoch it starts.
+    m_flags.clr(
+      DxvkContextFlag::GpXfbActive,
+      DxvkContextFlag::GpIndependentSets);
+
+    m_flags.set(
+      DxvkContextFlag::GpDirtyFramebuffer,
+      DxvkContextFlag::GpDirtyPipeline,
+      DxvkContextFlag::GpDirtyPipelineState,
+      DxvkContextFlag::GpDirtyVertexBuffers,
+      DxvkContextFlag::GpDirtyIndexBuffer,
+      DxvkContextFlag::GpDirtyXfbBuffers,
+      DxvkContextFlag::GpDirtyBlendConstants,
+      DxvkContextFlag::GpDirtyStencilRef,
+      DxvkContextFlag::GpDirtyMultisampleState,
+      DxvkContextFlag::GpDirtyRasterizerState,
+      DxvkContextFlag::GpDirtyViewport,
+      DxvkContextFlag::GpDirtyDepthBias,
+      DxvkContextFlag::GpDirtyDepthBounds,
+      DxvkContextFlag::GpDirtyDepthStencilState,
+      DxvkContextFlag::CpDirtyPipelineState,
+      DxvkContextFlag::DirtyDrawBuffer);
+
+    m_descriptorState.dirtyStages(
+      VK_SHADER_STAGE_ALL_GRAPHICS |
+      VK_SHADER_STAGE_COMPUTE_BIT);
+
+    m_state.gp.pipeline = nullptr;
+    m_state.cp.pipeline = nullptr;
+
+    DxvkContextObjects result;
+    result.cmd = m_cmd;
+    result.descriptorPool = m_descriptorPool;
+    return result;
+  }
+
+
+  bool DxvkContext::beginGxExternalCommandsInPass(DxvkContextObjects& objects) {
+    if (!m_flags.test(DxvkContextFlag::GpRenderPassBound)
+     || m_flags.test(DxvkContextFlag::GpXfbActive))
+      return false;
+
+    // Everything beginGxExternalCommands marks, except the framebuffer: the pass
+    // stays open, so DXVK's next draw continues in it after re-binding its state.
+    m_flags.clr(DxvkContextFlag::GpIndependentSets);
+
+    m_flags.set(
+      DxvkContextFlag::GpDirtyPipeline,
+      DxvkContextFlag::GpDirtyPipelineState,
+      DxvkContextFlag::GpDirtyVertexBuffers,
+      DxvkContextFlag::GpDirtyIndexBuffer,
+      DxvkContextFlag::GpDirtyXfbBuffers,
+      DxvkContextFlag::GpDirtyBlendConstants,
+      DxvkContextFlag::GpDirtyStencilRef,
+      DxvkContextFlag::GpDirtyMultisampleState,
+      DxvkContextFlag::GpDirtyRasterizerState,
+      DxvkContextFlag::GpDirtyViewport,
+      DxvkContextFlag::GpDirtyDepthBias,
+      DxvkContextFlag::GpDirtyDepthBounds,
+      DxvkContextFlag::GpDirtyDepthStencilState,
+      DxvkContextFlag::CpDirtyPipelineState,
+      DxvkContextFlag::DirtyDrawBuffer);
+
+    m_descriptorState.dirtyStages(
+      VK_SHADER_STAGE_ALL_GRAPHICS |
+      VK_SHADER_STAGE_COMPUTE_BIT);
+
+    m_state.gp.pipeline = nullptr;
+    m_state.cp.pipeline = nullptr;
+
+    objects.cmd = m_cmd;
+    objects.descriptorPool = m_descriptorPool;
+    return true;
+  }
+
+
+  void DxvkContext::notifyGxExternalWrite(
+    const Rc<DxvkImageView>&          view) {
+    if (view == nullptr || !view->isMultisampled())
+      return;
+
+    m_implicitResolves.invalidate(*view->image(), view->imageSubresources());
+  }
+
+
   void DxvkContext::beginQuery(const Rc<DxvkQuery>& query) {
     m_queryManager.enableQuery(m_cmd, query);
   }

@@ -3,6 +3,8 @@
 #include "d3d9_interfaces.h"
 #include "d3d9_multithread.h"
 
+#include "../util/sync/sync_signal.h"
+
 namespace dxvk {
 
   class D3D9InterfaceEx;
@@ -136,6 +138,48 @@ namespace dxvk {
 
     D3D9DeviceEx*  m_device;
     D3D9DeviceLock m_lock;
+
+  };
+
+  /**
+   * \brief GeneralsX external recording (IDxvkGxExternal)
+   */
+  class D3D9GxExternal final : public IDxvkGxExternal {
+
+  public:
+
+    D3D9GxExternal(
+            D3D9DeviceEx*         pInterface);
+
+    ~D3D9GxExternal();
+
+    ULONG STDMETHODCALLTYPE AddRef();
+
+    ULONG STDMETHODCALLTYPE Release();
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(
+            REFIID                riid,
+            void**                ppvObject);
+
+    HRESULT STDMETHODCALLTYPE GetDeviceInfo(
+            DxvkGxDeviceInfo*     pInfo);
+
+    HRESULT STDMETHODCALLTYPE RecordExternal(
+            UINT                      ReadCount,
+            ID3D9VkInteropTexture* const* ppReads,
+            PFN_DxvkGxRecord          pfnRecord,
+            void*                     pUser,
+            UINT64                    RetireValue);
+
+    UINT64 STDMETHODCALLTYPE GetRetiredValue();
+
+  private:
+
+    D3D9DeviceEx*   m_device;
+    Rc<sync::Fence> m_retired;
+    bool            m_newEpoch;
+    bool            m_suspend;
+    bool            m_inPass;
 
   };
 
