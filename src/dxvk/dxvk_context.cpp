@@ -21,7 +21,7 @@ namespace dxvk {
     m_implicitResolves(device) {
     // GeneralsX C2b (gxDigestMark): a measurement switch, read once
     std::string gxDigest = env::getEnvVar("DXVK_GX_INPUT_DIGEST");
-    m_gxDigestLevel = gxDigest == "3" ? 3u : gxDigest == "2" ? 2u : gxDigest.empty() || gxDigest == "0" ? 0u : 1u;
+    m_gxDigestLevel = gxDigest == "4" ? 4u : gxDigest == "3" ? 3u : gxDigest == "2" ? 2u : gxDigest.empty() || gxDigest == "0" ? 0u : 1u;
 
     // Init framebuffer info with default render pass in case
     // the app does not explicitly bind any render targets
@@ -335,32 +335,49 @@ namespace dxvk {
     const void*                     draw,
           size_t                    size) {
     uint64_t h = 1469598103934665603ull;
-    gxMix(h, draw, size);
-    gxMix(h, &m_state.gp.state, sizeof(m_state.gp.state));
-    gxMixPtr(h, m_state.gp.shaders.vs.ptr());
-    gxMixPtr(h, m_state.gp.shaders.tcs.ptr());
-    gxMixPtr(h, m_state.gp.shaders.tes.ptr());
-    gxMixPtr(h, m_state.gp.shaders.gs.ptr());
-    gxMixPtr(h, m_state.gp.shaders.fs.ptr());
-    gxMix(h, &m_state.gp.constants.mask, sizeof(m_state.gp.constants.mask));
-    gxMix(h, m_state.gp.constants.data.data(), sizeof(m_state.gp.constants.data));
-    gxMix(h, m_state.pc.data, sizeof(m_state.pc.data));
+    // =4 (diagnostic): every component's OWN hash too (c, reset at each cut), so a moving input is named, not just its part
+    const bool l4 = m_gxDigestLevel >= 4u;
+    uint64_t c = 1469598103934665603ull;
+    char comps[1024];
+    size_t cn = 0;
+    auto mix = [&] (const void* data, size_t sz) { gxMix(h, data, sz); if (l4) gxMix(c, data, sz); };
+    auto mixPtr = [&] (const void* ptr) { gxMixPtr(h, ptr); if (l4) gxMixPtr(c, ptr); };
+    auto cut = [&] () {
+      if (l4 && cn + 10 < sizeof(comps))
+        cn += std::snprintf(comps + cn, sizeof(comps) - cn, "%s%08x", cn ? "," : "", uint32_t(c));
+      c = 1469598103934665603ull;
+    };
+    mix(draw, size);
+    cut();
+    mix(&m_state.gp.state, sizeof(m_state.gp.state));
+    cut();
+    mixPtr(m_state.gp.shaders.vs.ptr());
+    mixPtr(m_state.gp.shaders.tcs.ptr());
+    mixPtr(m_state.gp.shaders.tes.ptr());
+    mixPtr(m_state.gp.shaders.gs.ptr());
+    mixPtr(m_state.gp.shaders.fs.ptr());
+    cut();
+    mix(&m_state.gp.constants.mask, sizeof(m_state.gp.constants.mask));
+    mix(m_state.gp.constants.data.data(), sizeof(m_state.gp.constants.data));
+    cut();
+    mix(m_state.pc.data, sizeof(m_state.pc.data));
+    cut();
 
     // Buffers by their PHYSICAL slice (the VkBuffer + offset the commit binds: invalidateBuffer renames the storage
     // behind one DxvkBuffer object - Codex rw1x-design-r13 #1); uniform buffers by their bytes.
     // A uniform buffer hashed by its bytes hashes ONLY its length and bytes: the d3d9 constant buffers rename their storage
     // every few hundred uploads, so the same bytes can sit in another VkBuffer in the other toggle state (review r14 P3-1).
-    auto mixSlice = [&h] (const DxvkBufferSlice& slice, bool bytes) {
+    auto mixSlice = [&] (const DxvkBufferSlice& slice, bool bytes) {
       DxvkBufferSliceHandle phys = slice.getSliceHandle();
-      gxMix(h, &phys.length, sizeof(phys.length));
+      mix(&phys.length, sizeof(phys.length));
 
       const void* map = bytes && phys.length ? phys.mapPtr : nullptr;
 
       if (map) {
-        gxMix(h, map, phys.length);
+        mix(map, phys.length);
       } else {
-        gxMix(h, &phys.handle, sizeof(phys.handle));
-        gxMix(h, &phys.offset, sizeof(phys.offset));
+        mix(&phys.handle, sizeof(phys.handle));
+        mix(&phys.offset, sizeof(phys.offset));
       }
     };
 
@@ -369,28 +386,37 @@ namespace dxvk {
 
     // The attachments and the render area the commit clamps scissors to
     const auto& ri = m_state.om.renderingInfo;
-    gxMix(h, &ri.rendering.renderArea, sizeof(ri.rendering.renderArea));
-    gxMix(h, &ri.rendering.colorAttachmentCount, sizeof(ri.rendering.colorAttachmentCount));
+    mix(&ri.rendering.renderArea, sizeof(ri.rendering.renderArea));
+    mix(&ri.rendering.colorAttachmentCount, sizeof(ri.rendering.colorAttachmentCount));
+    cut();
 
     for (uint32_t i = 0; i < ri.rendering.colorAttachmentCount && i < ri.color.size(); i++)
-      gxMix(h, &ri.color[i].imageView, sizeof(ri.color[i].imageView));
+      mix(&ri.color[i].imageView, sizeof(ri.color[i].imageView));
+    cut();
 
-    gxMix(h, &ri.depth.imageView, sizeof(ri.depth.imageView));
-    gxMix(h, &ri.stencil.imageView, sizeof(ri.stencil.imageView));
+    mix(&ri.depth.imageView, sizeof(ri.depth.imageView));
+    mix(&ri.stencil.imageView, sizeof(ri.stencil.imageView));
+    cut();
     part[1] = h;
 
     mixSlice(m_state.vi.indexBuffer, false);
-    gxMix(h, &m_state.vi.indexType, sizeof(m_state.vi.indexType));
+    mix(&m_state.vi.indexType, sizeof(m_state.vi.indexType));
+    cut();
 
     for (uint32_t i = 0; i < m_state.vi.vertexBuffers.size(); i++)
       mixSlice(m_state.vi.vertexBuffers[i], false);
+    cut();
 
-    gxMix(h, m_state.vi.vertexStrides.data(), sizeof(m_state.vi.vertexStrides));
+    mix(m_state.vi.vertexStrides.data(), sizeof(m_state.vi.vertexStrides));
+    cut();
     part[2] = h;
-    gxMix(h, &m_state.vp.viewportCount, sizeof(m_state.vp.viewportCount));
-    gxMix(h, m_state.vp.viewports.data(), sizeof(m_state.vp.viewports));
-    gxMix(h, m_state.vp.scissorRects.data(), sizeof(m_state.vp.scissorRects));
-    gxMix(h, &m_state.dyn, sizeof(m_state.dyn));
+    mix(&m_state.vp.viewportCount, sizeof(m_state.vp.viewportCount));
+    mix(m_state.vp.viewports.data(), sizeof(m_state.vp.viewports));
+    cut();
+    mix(m_state.vp.scissorRects.data(), sizeof(m_state.vp.scissorRects));
+    cut();
+    mix(&m_state.dyn, sizeof(m_state.dyn));
+    cut();
     part[3] = h;
 
     // The resources the pipeline's layout reads, in layout order
@@ -402,12 +428,13 @@ namespace dxvk {
           const DxvkBindingInfo& binding = layout.getBinding(setIndex, j);
           const DxvkShaderResourceSlot& slot = m_rc[binding.resourceBinding];
 
-          gxMix(h, &binding.descriptorType, sizeof(binding.descriptorType));
-          gxMix(h, &binding.resourceBinding, sizeof(binding.resourceBinding));
-          gxMixPtr(h, slot.sampler.ptr());
-          gxMixPtr(h, slot.imageView.ptr());
-          gxMixPtr(h, slot.bufferView.ptr());
+          mix(&binding.descriptorType, sizeof(binding.descriptorType));
+          mix(&binding.resourceBinding, sizeof(binding.resourceBinding));
+          mixPtr(slot.sampler.ptr());
+          mixPtr(slot.imageView.ptr());
+          mixPtr(slot.bufferView.ptr());
           mixSlice(slot.bufferSlice, binding.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+          cut();
         }
       }
     }
@@ -421,7 +448,21 @@ namespace dxvk {
     if (m_gxDigestLevel == 2u)
       std::fprintf(stderr, "[GXDIGEST] tag=%llx i=%u h=%016llx\n", (unsigned long long)m_gxDigestTag,
         m_gxDigestDraws - 1u, (unsigned long long)h);
-    else if (m_gxDigestLevel >= 3u)
+    else if (l4) {
+      std::fprintf(stderr, "[GXDIGEST4] tag=%llx i=%u h=%016llx c=%s\n", (unsigned long long)m_gxDigestTag, m_gxDigestDraws - 1u,
+        (unsigned long long)h, comps);
+      // the components, in order: draw, gp.state, shaders, spec, push, area+count, colour views, depth+stencil views, IB, VBs,
+      // strides, viewports, scissors, dyn, then one per binding - named once per pipeline layout
+      static const void* s_lastLayout = nullptr;
+      if (m_state.gp.pipeline && m_state.gp.pipeline->getBindings() != s_lastLayout) {
+        s_lastLayout = m_state.gp.pipeline->getBindings();
+        const auto& layout = m_state.gp.pipeline->getBindings()->layout();
+        for (auto setIndex : bit::BitMask(layout.getSetMask()))
+          for (uint32_t j = 0; j < layout.getBindingCount(setIndex); j++)
+            std::fprintf(stderr, "[GXDIGEST4L] layout=%p set=%u j=%u type=%u resource=%u\n", s_lastLayout, setIndex, j,
+              uint32_t(layout.getBinding(setIndex, j).descriptorType), layout.getBinding(setIndex, j).resourceBinding);
+      }
+    } else if (m_gxDigestLevel >= 3u)
       std::fprintf(stderr, "[GXDIGEST] tag=%llx i=%u h=%016llx p=%016llx,%016llx,%016llx,%016llx,%016llx\n",
         (unsigned long long)m_gxDigestTag, m_gxDigestDraws - 1u, (unsigned long long)h, (unsigned long long)part[0],
         (unsigned long long)part[1], (unsigned long long)part[2], (unsigned long long)part[3], (unsigned long long)part[4]);
