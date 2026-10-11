@@ -629,8 +629,12 @@ namespace dxvk {
     if (Flags & DXVK_GX_RUN_VALIDATE_ONLY)
       return D3D_OK;
 
-    // Per task, DXVK's own setters in the classic per-task order, then DXVK's own draw.
+    // Per task, DXVK's own setters in the classic per-task order, then DXVK's own draw. The fast path needs a
+    // REAL full preparation earlier in this run (a zero-primitive DrawIndexedPrimitive returns before PrepareDraw:
+    // Codex rw1x-design-r13 #4), and its dormant baseline is the flags that preparation left.
     UINT lastSet = ~0u;
+    m_runPrepared = false;
+    m_runLastKey  = ~0u;
 
     for (UINT i = 0; i < TaskCount; i++) {
       const DxvkGxTask& task = pTasks[i];
@@ -657,11 +661,16 @@ namespace dxvk {
       if (task.normalizeNormals)
         m_device->SetRenderState(D3DRS_NORMALIZENORMALS, TRUE);
 
-      if (i != 0 && task.primCount != 0 && (Flags & (DXVK_GX_RUN_FAST | DXVK_GX_RUN_CHECK)) && RunFastEligible()) {
+      if (m_runPrepared && task.primCount != 0 && (Flags & (DXVK_GX_RUN_FAST | DXVK_GX_RUN_CHECK)) && RunFastEligible()) {
         RunDrawFast(PrimitiveType, task, Flags);
       } else {
         m_device->DrawIndexedPrimitive(PrimitiveType, task.baseVertex, task.minIndex, task.numVertices, task.startIndex, task.primCount);
-        m_runDormant = m_device->m_flags.raw() & ~GxFFVSFlags.raw();
+
+        if (task.primCount != 0) {
+          m_runDormant  = m_device->m_flags.raw() & ~GxFFVSFlags.raw();
+          m_runPrepared = true;
+          m_runLastKey  = RunKeyProxy();
+        }
       }
 
       if (task.normalizeNormals)
@@ -698,6 +707,20 @@ namespace dxvk {
     });
 
     return D3D_OK;
+  }
+
+
+  // The task-varying inputs of DXVK's fixed-function VS key (UpdateFixedFunctionVS): NORMALIZENORMALS and the
+  // enabled light count - the only key inputs a task's setters can change.
+  uint32_t D3D9GxExternal::RunKeyProxy() const {
+    uint32_t lights = 0;
+
+    for (uint32_t i = 0; i < caps::MaxEnabledLights; i++) {
+      if (m_device->m_state.enabledLightIndices[i] != std::numeric_limits<uint32_t>::max())
+        lights++;
+    }
+
+    return (m_device->m_state.renderStates[D3DRS_NORMALIZENORMALS] ? 0x100u : 0u) | lights;
   }
 
 
@@ -745,8 +768,14 @@ namespace dxvk {
     // TEST-ONLY NOKEY forgets the key (the flag survives, so the check below must see the shader re-bound).
     const bool key = d->m_flags.test(D3D9DeviceFlag::DirtyFFVertexShader);
 
-    if (key)
+    // an ACTUAL key change against the previous draw of the run (the flag is also set by a FALSE -> TRUE
+    // NORMALIZENORMALS pair between two scaled draws - Codex rw1x-design-r13 #5)
+    const uint32_t keyProxy = RunKeyProxy();
+
+    if (keyProxy != m_runLastKey)
       m_runStats.fastKeyTasks++;
+
+    m_runLastKey = keyProxy;
 
     if (unlikely(Flags & DXVK_GX_RUN_MUTANT_NOKEY))
       d->m_flags.clr(D3D9DeviceFlag::DirtyFFVertexShader);

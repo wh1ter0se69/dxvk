@@ -192,6 +192,8 @@ namespace dxvk {
 
     bool RunFastEligible();
 
+    uint32_t RunKeyProxy() const;
+
     void RunDrawFast(
             D3DPRIMITIVETYPE          PrimitiveType,
       const DxvkGxTask&               Task,
@@ -205,6 +207,8 @@ namespace dxvk {
     DxvkGxRunStats  m_runStats = { };
     uint32_t        m_runDormant = 0;   // device flags the run's last full preparation left set (RunFastEligible)
     bool            m_digest     = false;  // DXVK_GX_INPUT_DIGEST (DigestMark)
+    bool            m_runPrepared = false; // a nonzero draw of this run ran the full preparation
+    uint32_t        m_runLastKey = ~0u;    // RunKeyProxy at the run's previous draw
 
   };
 
