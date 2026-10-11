@@ -649,10 +649,12 @@ namespace dxvk {
       if (task.normalizeNormals)
         m_device->SetRenderState(D3DRS_NORMALIZENORMALS, TRUE);
 
-      if (i != 0 && task.primCount != 0 && (Flags & (DXVK_GX_RUN_FAST | DXVK_GX_RUN_CHECK)) && RunFastEligible())
+      if (i != 0 && task.primCount != 0 && (Flags & (DXVK_GX_RUN_FAST | DXVK_GX_RUN_CHECK)) && RunFastEligible()) {
         RunDrawFast(PrimitiveType, task, Flags);
-      else
+      } else {
         m_device->DrawIndexedPrimitive(PrimitiveType, task.baseVertex, task.minIndex, task.numVertices, task.startIndex, task.primCount);
+        m_runDormant = m_device->m_flags.raw() & ~GxFFVSFlags.raw();
+      }
 
       if (task.normalizeNormals)
         m_device->SetRenderState(D3DRS_NORMALIZENORMALS, FALSE);
@@ -675,20 +677,22 @@ namespace dxvk {
   }
 
 
-  // Whether PrepareDraw would find nothing to do but the fixed-function VS's own state (key,
-  // constants, vertex blend) - the only state a task's setters dirty. Mirrors PrepareDraw's and
-  // UploadPerDrawData's inputs; the C2b check (DXVK_GX_RUN_CHECK) proves it per task.
+  // The fixed-function VS's own state (key, constants, vertex blend) - the only device flags a task's setters dirty.
+  static const D3D9DeviceFlags GxFFVSFlags(
+    D3D9DeviceFlag::DirtyFFVertexData,
+    D3D9DeviceFlag::DirtyFFVertexBlend,
+    D3D9DeviceFlag::DirtyFFVertexShader);
+
+
+  // Whether PrepareDraw would find nothing to do but the fixed-function VS's own state. A flag the run's
+  // last FULL preparation left set is dormant for this state (fog density with linear fog, point scale on
+  // triangle lists - Codex rw1x-design-r12b #1) and stays so: between full preparations only the tasks'
+  // FF-VS setters run. Anything set since, or anything per-draw pending, takes the full path. The C2b
+  // check (DXVK_GX_RUN_CHECK) and the input digest prove it per task.
   bool D3D9GxExternal::RunFastEligible() {
     D3D9DeviceEx* d = m_device;
 
-    const D3D9DeviceFlags allowed(
-      D3D9DeviceFlag::DirtyFFVertexData,
-      D3D9DeviceFlag::DirtyFFVertexBlend,
-      D3D9DeviceFlag::DirtyFFVertexShader,
-      D3D9DeviceFlag::InScene,
-      D3D9DeviceFlag::ValidSampleMask);
-
-    if (d->m_flags.raw() & ~allowed.raw())
+    if (d->m_flags.raw() & ~GxFFVSFlags.raw() & ~m_runDormant)
       return false;
 
     if (d->m_activeHazardsRT || d->m_activeHazardsDS || d->m_lastHazardsRT || d->m_lastHazardsDS)
@@ -709,7 +713,7 @@ namespace dxvk {
     if (usedBuffersMask == d->m_activeVertexBuffersToUploadPerDraw)
       return false;
 
-    D3D9CommonBuffer* ibo = d->GetCommonBuffer(d->m_state.indices);
+    D3D9CommonBuffer* ibo = GetCommonBuffer(d->m_state.indices);
     return ibo != nullptr && !ibo->NeedsUpload() && !ibo->DoPerDrawUpload() && !d->CanOnlySWVP();
   }
 
@@ -723,6 +727,9 @@ namespace dxvk {
     // The fast path's own work: UpdateFixedFunctionVS handles the VS key, the constants and vertex blend.
     // TEST-ONLY NOKEY forgets the key (the flag survives, so the check below must see the shader re-bound).
     const bool key = d->m_flags.test(D3D9DeviceFlag::DirtyFFVertexShader);
+
+    if (key)
+      m_runStats.fastKeyTasks++;
 
     if (unlikely(Flags & DXVK_GX_RUN_MUTANT_NOKEY))
       d->m_flags.clr(D3D9DeviceFlag::DirtyFFVertexShader);

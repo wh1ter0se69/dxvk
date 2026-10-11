@@ -345,6 +345,7 @@ struct DxvkGxRunStats {
   UINT64                  fastTasks;      ///< draws that took the fast path
   UINT64                  checkedTasks;   ///< fast-path candidates proven in check mode
   UINT64                  checkFailed;    ///< ... where the full preparation still emitted work
+  UINT64                  fastKeyTasks;   ///< fast-path candidates whose VS key was dirty (NOKEY's arm needs some)
 };
 
 #define DXVK_GX_RUN_FAST          0x0001u   ///< tasks after the first skip PrepareDraw when only FF VS state is dirty

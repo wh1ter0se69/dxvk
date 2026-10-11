@@ -199,6 +199,7 @@ namespace dxvk {
     bool            m_suspend;
     bool            m_inPass;
     DxvkGxRunStats  m_runStats = { };
+    uint32_t        m_runDormant = 0;   // device flags the run's last full preparation left set (RunFastEligible)
 
   };
 
