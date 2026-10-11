@@ -1507,6 +1507,7 @@ namespace dxvk {
     uint64_t                    m_gxDigestTag    = 0u;
     uint64_t                    m_gxDigestSeq    = 0u;
     uint32_t                    m_gxDigestDraws  = 0u;
+    uint32_t                    m_gxDigestNested = 0u;
 
     void gxDigestDraw(
       const void*                     draw,

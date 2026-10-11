@@ -306,11 +306,19 @@ namespace dxvk {
     if (!m_gxDigestLevel)
       return;
 
-    if (begin) {
+    if (begin && m_gxDigestActive) {
+      // Brackets do not nest (Claude review r14 P3-2): the inner one is merged into the outer, and the line says so - a
+      // comparison that sees it is void
+      std::fprintf(stderr, "[GXDIGEST] NESTED tag=%llx inside tag=%llx (merged into the outer bracket)\n",
+        (unsigned long long)tag, (unsigned long long)m_gxDigestTag);
+      m_gxDigestNested++;
+    } else if (begin) {
       m_gxDigestActive = true;
       m_gxDigestTag    = tag;
       m_gxDigestSeq    = 1469598103934665603ull;
       m_gxDigestDraws  = 0u;
+    } else if (m_gxDigestNested) {
+      m_gxDigestNested--;
     } else if (m_gxDigestActive) {
       m_gxDigestActive = false;
       // the CLOSE names the bracket: a caller may only know which path drew it afterwards
@@ -340,17 +348,20 @@ namespace dxvk {
 
     // Buffers by their PHYSICAL slice (the VkBuffer + offset the commit binds: invalidateBuffer renames the storage
     // behind one DxvkBuffer object - Codex rw1x-design-r13 #1); uniform buffers by their bytes.
+    // A uniform buffer hashed by its bytes hashes ONLY its length and bytes: the d3d9 constant buffers rename their storage
+    // every few hundred uploads, so the same bytes can sit in another VkBuffer in the other toggle state (review r14 P3-1).
     auto mixSlice = [&h] (const DxvkBufferSlice& slice, bool bytes) {
       DxvkBufferSliceHandle phys = slice.getSliceHandle();
-      gxMix(h, &phys.handle, sizeof(phys.handle));
       gxMix(h, &phys.length, sizeof(phys.length));
 
       const void* map = bytes && phys.length ? phys.mapPtr : nullptr;
 
-      if (map)
+      if (map) {
         gxMix(h, map, phys.length);
-      else
+      } else {
+        gxMix(h, &phys.handle, sizeof(phys.handle));
         gxMix(h, &phys.offset, sizeof(phys.offset));
+      }
     };
 
     uint64_t part[8] = { };

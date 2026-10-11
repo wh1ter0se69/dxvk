@@ -96,7 +96,7 @@ namespace dxvk {
     });
 
     if (unlikely(m_gxZero))
-      std::memset(m_slice->mapPtr(), 0, m_size);
+      std::memset(m_slice->mapPtr(), 0, align(m_size, m_align));	// the whole bound range (review r14 P3-1)
 
     return m_slice->mapPtr();
   }
