@@ -303,12 +303,63 @@ struct DxvkGxDeviceInfo {
 };
 
 /**
+ * \brief GeneralsX DrawRun: the four light slots the game drives, as the device holds them at a draw
+ *
+ * Bit i of \c enableMask (i < 4): slot i enabled, its value in \c lights[i]; a clear bit: slot i disabled
+ * (its value is not read). D3DLIGHT9 has D3DLIGHT8's layout.
+ */
+struct DxvkGxLightSet {
+  UINT                    enableMask;
+  UINT                    reserved;
+  D3DLIGHT9               lights[4];
+};
+
+/**
+ * \brief GeneralsX DrawRun: one classic indexed draw of a claimed run and its per-task state
+ *
+ * Applied in the classic per-task order: the light set (when its index differs from the
+ * previous task's), D3DRS_AMBIENT, D3DTS_WORLD, D3DRS_NORMALIZENORMALS TRUE when
+ * \c normalizeNormals, the draw at \c baseVertex, D3DRS_NORMALIZENORMALS FALSE when
+ * \c normalizeNormals. Everything else the draw reads is the device's state at the call.
+ */
+struct DxvkGxTask {
+  D3DMATRIX               world;
+  DWORD                   ambient;
+  UINT                    lightSet;
+  UINT                    normalizeNormals;
+  INT                     baseVertex;
+  UINT                    minIndex;
+  UINT                    numVertices;
+  UINT                    startIndex;
+  UINT                    primCount;
+};
+
+/**
+ * \brief GeneralsX DrawRun: cumulative counters since device creation
+ */
+struct DxvkGxRunStats {
+  UINT64                  calls;          ///< DrawRun calls (validate-only ones included)
+  UINT64                  refused;        ///< calls that failed validation (nothing drawn)
+  UINT64                  tasks;          ///< draws issued
+  UINT64                  lightSetsApplied;
+  UINT64                  fastTasks;      ///< draws that took the fast path
+  UINT64                  checkedTasks;   ///< fast-path candidates proven in check mode
+  UINT64                  checkFailed;    ///< ... where the full preparation still emitted work
+};
+
+#define DXVK_GX_RUN_FAST          0x0001u   ///< tasks after the first skip PrepareDraw when only FF VS state is dirty
+#define DXVK_GX_RUN_CHECK         0x0002u   ///< prove each fast-path candidate: full PrepareDraw after it must emit nothing
+#define DXVK_GX_RUN_MUTANT_NOKEY  0x0100u   ///< TEST-ONLY: the fast path forgets the VS key (the check must fire)
+#define DXVK_GX_RUN_MUTANT_NOAMB  0x0200u   ///< TEST-ONLY: DrawRun skips the ambient setter (the picture must differ)
+#define DXVK_GX_RUN_VALIDATE_ONLY 0x8000u   ///< TEST-ONLY: validate, count, return (the per-call overhead toggle)
+
+/**
  * \brief GeneralsX: record foreign Vulkan commands inside DXVK's command list
  *
  * The declaration is mirrored by the game (GXRender/Interop/GxDxvkExternal.h);
  * any change to it takes a new IID.
  */
-MIDL_INTERFACE("703eff93-9fbc-4fce-a0aa-ed0a25773e95")
+MIDL_INTERFACE("703eff94-9fbc-4fce-a0aa-ed0a25773e95")
 IDxvkGxExternal : public IUnknown {
   /**
    * \brief DXVK's loader entry point, handles, queue family and enabled features
@@ -340,6 +391,27 @@ IDxvkGxExternal : public IUnknown {
    * \brief Highest RetireValue whose command list the GPU has finished
    */
   virtual UINT64 STDMETHODCALLTYPE GetRetiredValue() = 0;
+
+  /**
+   * \brief Draws a claimed run of classic indexed draws through DXVK's own d3d9 path
+   *
+   * Per task: DXVK's own setters for the task's lights / ambient / world / NORMALIZENORMALS
+   * bracket and DXVK's own DrawIndexedPrimitive at the task's base vertex, on the calling
+   * thread, in D3D order. Validates everything first.
+   * \returns D3DERR_INVALIDCALL with nothing drawn or changed: no tasks, a null array, a light
+   *          set index out of range, a state block being recorded, a programmable vertex shader
+   *          bound, no vertex declaration or no index buffer
+   */
+  virtual HRESULT STDMETHODCALLTYPE DrawRun(
+          D3DPRIMITIVETYPE          PrimitiveType,
+          UINT                      TaskCount,
+    const DxvkGxTask*               pTasks,
+          UINT                      LightSetCount,
+    const DxvkGxLightSet*           pLightSets,
+          UINT                      Flags) = 0;
+
+  virtual HRESULT STDMETHODCALLTYPE GetRunStats(
+          DxvkGxRunStats*           pStats) = 0;
 };
 
 /**
@@ -381,5 +453,5 @@ __CRT_UUID_DECL(ID3D9VkInteropInterface1,  0xd6589ed4,0x7a37,0x4096,0xba,0xc2,0x
 __CRT_UUID_DECL(ID3D9VkInteropTexture,     0xd56344f5,0x8d35,0x46fd,0x80,0x6d,0x94,0xc3,0x51,0xb4,0x72,0xc1);
 __CRT_UUID_DECL(ID3D9VkInteropDevice,      0x2eaa4b89,0x0107,0x4bdb,0x87,0xf7,0x0f,0x54,0x1c,0x49,0x3c,0xe0);
 __CRT_UUID_DECL(ID3D9VkExtSwapchain,       0x13776e93,0x4aa9,0x430a,0xa4,0xec,0xfe,0x9e,0x28,0x11,0x81,0xd5);
-__CRT_UUID_DECL(IDxvkGxExternal,           0x703eff93,0x9fbc,0x4fce,0xa0,0xaa,0xed,0x0a,0x25,0x77,0x3e,0x95);
+__CRT_UUID_DECL(IDxvkGxExternal,           0x703eff94,0x9fbc,0x4fce,0xa0,0xaa,0xed,0x0a,0x25,0x77,0x3e,0x95);
 #endif

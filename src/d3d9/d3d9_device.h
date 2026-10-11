@@ -1195,6 +1195,8 @@ namespace dxvk {
 
     template<bool AllowFlush = true, typename Cmd>
     void EmitCs(Cmd&& command) {
+      ++m_gxEmitCount;  // GeneralsX DrawRun: its C2b check counts the CS commands a full PrepareDraw emits
+
       if (unlikely(!m_csChunk->push(command))) {
         EmitCsChunk(std::move(m_csChunk));
         m_csChunk = AllocCsChunk();
@@ -1533,6 +1535,7 @@ namespace dxvk {
     D3D9InputAssemblyState          m_iaState;
 
     D3D9DeviceFlags                 m_flags;
+    uint64_t                        m_gxEmitCount = 0;  // GeneralsX: EmitCs calls (D3D9GxExternal::DrawRun's check)
     // Last state of depth textures. Doesn't update when NULL is bound.
     // & with m_activeTextures to normalize.
     uint32_t                        m_instancedData = 0;

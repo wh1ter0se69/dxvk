@@ -173,13 +173,32 @@ namespace dxvk {
 
     UINT64 STDMETHODCALLTYPE GetRetiredValue();
 
+    HRESULT STDMETHODCALLTYPE DrawRun(
+            D3DPRIMITIVETYPE          PrimitiveType,
+            UINT                      TaskCount,
+      const DxvkGxTask*               pTasks,
+            UINT                      LightSetCount,
+      const DxvkGxLightSet*           pLightSets,
+            UINT                      Flags);
+
+    HRESULT STDMETHODCALLTYPE GetRunStats(
+            DxvkGxRunStats*           pStats);
+
   private:
+
+    bool RunFastEligible();
+
+    void RunDrawFast(
+            D3DPRIMITIVETYPE          PrimitiveType,
+      const DxvkGxTask&               Task,
+            UINT                      Flags);
 
     D3D9DeviceEx*   m_device;
     Rc<sync::Fence> m_retired;
     bool            m_newEpoch;
     bool            m_suspend;
     bool            m_inPass;
+    DxvkGxRunStats  m_runStats = { };
 
   };
 

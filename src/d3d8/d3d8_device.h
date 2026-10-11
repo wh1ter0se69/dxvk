@@ -364,6 +364,13 @@ namespace dxvk {
     inline bool ShouldRecord() { return m_recorder != nullptr; }
     inline bool ShouldBatch()  { return m_batcher  != nullptr; }
 
+    // GeneralsX: IDxvkGxExternal's RecordExternal / DrawRun reach the d3d9 device directly; with the batcher on they
+    // would overtake its pending draws, so the extension is not handed out then (the game runs classic).
+    bool GxInteropAllowed(REFIID riid) final {
+      static const GUID gxExternal = { 0x703eff94, 0x9fbc, 0x4fce, { 0xa0, 0xaa, 0xed, 0x0a, 0x25, 0x77, 0x3e, 0x95 } };
+      return !(riid == gxExternal && ShouldBatch());
+    }
+
     D3D8DeviceLock LockDevice() {
       return m_multithread.AcquireLock();
     }

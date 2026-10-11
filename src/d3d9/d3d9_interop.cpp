@@ -584,4 +584,198 @@ namespace dxvk {
     return m_retired->value();
   }
 
+
+  ////////////////////////////////
+  // GeneralsX DrawRun
+  ///////////////////////////////
+
+  HRESULT STDMETHODCALLTYPE D3D9GxExternal::DrawRun(
+          D3DPRIMITIVETYPE          PrimitiveType,
+          UINT                      TaskCount,
+    const DxvkGxTask*               pTasks,
+          UINT                      LightSetCount,
+    const DxvkGxLightSet*           pLightSets,
+          UINT                      Flags) {
+    D3D9DeviceLock lock = m_device->LockDevice();
+
+    m_runStats.calls++;
+
+    // Everything is checked before the first setter: a refused run draws and changes nothing, and
+    // the caller then issues the same calls through the d3d8 device. A state block being recorded
+    // (d3d8's records on d3d9 too) would capture our setters instead of applying them.
+    bool valid = TaskCount != 0 && pTasks != nullptr
+      && (LightSetCount == 0 || pLightSets != nullptr)
+      && !m_device->ShouldRecord()
+      && m_device->m_state.vertexDecl != nullptr
+      && m_device->m_state.indices != nullptr
+      && !m_device->UseProgrammableVS();
+
+    for (UINT i = 0; valid && i < TaskCount; i++)
+      valid = pTasks[i].lightSet < LightSetCount;
+
+    if (!valid) {
+      m_runStats.refused++;
+      return D3DERR_INVALIDCALL;
+    }
+
+    if (Flags & DXVK_GX_RUN_VALIDATE_ONLY)
+      return D3D_OK;
+
+    // Per task, DXVK's own setters in the classic per-task order, then DXVK's own draw.
+    UINT lastSet = ~0u;
+
+    for (UINT i = 0; i < TaskCount; i++) {
+      const DxvkGxTask& task = pTasks[i];
+
+      if (task.lightSet != lastSet) {
+        const DxvkGxLightSet& set = pLightSets[task.lightSet];
+
+        for (DWORD l = 0; l < 4; l++) {
+          if (set.enableMask & (1u << l))
+            m_device->SetLight(l, &set.lights[l]);
+
+          m_device->LightEnable(l, (set.enableMask >> l) & 1u);
+        }
+
+        lastSet = task.lightSet;
+        m_runStats.lightSetsApplied++;
+      }
+
+      if (likely(!(Flags & DXVK_GX_RUN_MUTANT_NOAMB)))
+        m_device->SetRenderState(D3DRS_AMBIENT, task.ambient);
+
+      m_device->SetTransform(D3DTS_WORLD, &task.world);
+
+      if (task.normalizeNormals)
+        m_device->SetRenderState(D3DRS_NORMALIZENORMALS, TRUE);
+
+      if (i != 0 && task.primCount != 0 && (Flags & (DXVK_GX_RUN_FAST | DXVK_GX_RUN_CHECK)) && RunFastEligible())
+        RunDrawFast(PrimitiveType, task, Flags);
+      else
+        m_device->DrawIndexedPrimitive(PrimitiveType, task.baseVertex, task.minIndex, task.numVertices, task.startIndex, task.primCount);
+
+      if (task.normalizeNormals)
+        m_device->SetRenderState(D3DRS_NORMALIZENORMALS, FALSE);
+
+      m_runStats.tasks++;
+    }
+
+    return D3D_OK;
+  }
+
+
+  HRESULT STDMETHODCALLTYPE D3D9GxExternal::GetRunStats(
+          DxvkGxRunStats*           pStats) {
+    if (pStats == nullptr)
+      return D3DERR_INVALIDCALL;
+
+    D3D9DeviceLock lock = m_device->LockDevice();
+    *pStats = m_runStats;
+    return D3D_OK;
+  }
+
+
+  // Whether PrepareDraw would find nothing to do but the fixed-function VS's own state (key,
+  // constants, vertex blend) - the only state a task's setters dirty. Mirrors PrepareDraw's and
+  // UploadPerDrawData's inputs; the C2b check (DXVK_GX_RUN_CHECK) proves it per task.
+  bool D3D9GxExternal::RunFastEligible() {
+    D3D9DeviceEx* d = m_device;
+
+    const D3D9DeviceFlags allowed(
+      D3D9DeviceFlag::DirtyFFVertexData,
+      D3D9DeviceFlag::DirtyFFVertexBlend,
+      D3D9DeviceFlag::DirtyFFVertexShader,
+      D3D9DeviceFlag::InScene,
+      D3D9DeviceFlag::ValidSampleMask);
+
+    if (d->m_flags.raw() & ~allowed.raw())
+      return false;
+
+    if (d->m_activeHazardsRT || d->m_activeHazardsDS || d->m_lastHazardsRT || d->m_lastHazardsDS)
+      return false;
+
+    const uint32_t usedSamplerMask = d->m_psShaderMasks.samplerMask | d->m_vsShaderMasks.samplerMask;
+    const uint32_t usedTextureMask = d->m_activeTextures & usedSamplerMask;
+    const uint32_t streamMask      = d->m_state.vertexDecl->GetStreamMask();
+    const uint32_t usedBuffersMask = streamMask & d->m_activeVertexBuffers;
+
+    if ((d->m_activeTexturesToUpload | d->m_activeTexturesToGen | d->m_dirtySamplerStates) & usedTextureMask)
+      return false;
+
+    if ((d->m_dirtyTextures & usedSamplerMask) || (d->m_activeVertexBuffersToUpload & streamMask))
+      return false;
+
+    // UploadPerDrawData's system-memory paths (its dynamicSysmemVBOs / dynamicSysmemIBO tests)
+    if (usedBuffersMask == d->m_activeVertexBuffersToUploadPerDraw)
+      return false;
+
+    D3D9CommonBuffer* ibo = d->GetCommonBuffer(d->m_state.indices);
+    return ibo != nullptr && !ibo->NeedsUpload() && !ibo->DoPerDrawUpload() && !d->CanOnlySWVP();
+  }
+
+
+  void D3D9GxExternal::RunDrawFast(
+          D3DPRIMITIVETYPE          PrimitiveType,
+    const DxvkGxTask&               Task,
+          UINT                      Flags) {
+    D3D9DeviceEx* d = m_device;
+
+    // The fast path's own work: UpdateFixedFunctionVS handles the VS key, the constants and vertex blend.
+    // TEST-ONLY NOKEY forgets the key (the flag survives, so the check below must see the shader re-bound).
+    const bool key = d->m_flags.test(D3D9DeviceFlag::DirtyFFVertexShader);
+
+    if (unlikely(Flags & DXVK_GX_RUN_MUTANT_NOKEY))
+      d->m_flags.clr(D3D9DeviceFlag::DirtyFFVertexShader);
+
+    d->UpdateFixedFunctionVS();
+
+    if (unlikely((Flags & DXVK_GX_RUN_MUTANT_NOKEY) && key))
+      d->m_flags.set(D3D9DeviceFlag::DirtyFFVertexShader);
+
+    UINT minIndex   = Task.minIndex;
+    UINT startIndex = Task.startIndex;
+    INT  baseVertex = Task.baseVertex;
+
+    if (Flags & DXVK_GX_RUN_CHECK) {
+      // C2b: after the fast path's own work, DXVK's full preparation must emit nothing. The draw below
+      // then rests on the full preparation, so check mode changes no pixel.
+      bool dynamicVBOs = false;
+      bool dynamicIBO  = false;
+
+      d->UploadPerDrawData(minIndex, Task.numVertices, startIndex,
+        GetVertexCount(PrimitiveType, Task.primCount), baseVertex, &dynamicVBOs, &dynamicIBO);
+
+      const uint64_t before = d->m_gxEmitCount;
+      d->PrepareDraw(PrimitiveType, !dynamicVBOs, !dynamicIBO);
+
+      m_runStats.checkedTasks++;
+
+      if (d->m_gxEmitCount != before)
+        m_runStats.checkFailed++;
+    } else {
+      m_runStats.fastTasks++;
+    }
+
+    // DrawIndexedPrimitive's own CS command
+    d->EmitCs([d,
+      cPrimType        = PrimitiveType,
+      cPrimCount       = Task.primCount,
+      cStartIndex      = startIndex,
+      cBaseVertexIndex = baseVertex,
+      cInstanceCount   = d->GetInstanceCount()
+    ](DxvkContext* ctx) {
+      auto drawInfo = d->GenerateDrawInfo(cPrimType, cPrimCount, cInstanceCount);
+
+      d->ApplyPrimitiveType(ctx, cPrimType);
+
+      VkDrawIndexedIndirectCommand draw = { };
+      draw.indexCount    = drawInfo.vertexCount;
+      draw.instanceCount = drawInfo.instanceCount;
+      draw.firstIndex    = cStartIndex;
+      draw.vertexOffset  = cBaseVertexIndex;
+
+      ctx->drawIndexed(1u, &draw);
+    });
+  }
+
 }
