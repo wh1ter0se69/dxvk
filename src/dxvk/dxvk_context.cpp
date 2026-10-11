@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <vector>
@@ -18,6 +19,10 @@ namespace dxvk {
     m_execBarriers(DxvkCmdBuffer::ExecBuffer),
     m_queryManager(m_common->queryPool()),
     m_implicitResolves(device) {
+    // GeneralsX C2b (gxDigestMark): a measurement switch, read once
+    std::string gxDigest = env::getEnvVar("DXVK_GX_INPUT_DIGEST");
+    m_gxDigestLevel = gxDigest == "2" ? 2u : gxDigest.empty() || gxDigest == "0" ? 0u : 1u;
+
     // Init framebuffer info with default render pass in case
     // the app does not explicitly bind any render targets
     m_state.om.framebufferInfo = makeFramebufferInfo(m_state.om.renderTargets);
@@ -271,6 +276,120 @@ namespace dxvk {
       return;
 
     m_implicitResolves.invalidate(*view->image(), view->imageSubresources());
+  }
+
+
+  namespace {
+
+    // FNV-1a, 64 bit, over raw bytes
+    void gxMix(uint64_t& h, const void* data, size_t size) {
+      const unsigned char* p = reinterpret_cast<const unsigned char*>(data);
+
+      for (size_t i = 0; i < size; i++) {
+        h ^= p[i];
+        h *= 1099511628211ull;
+      }
+    }
+
+    template<typename T>
+    void gxMixPtr(uint64_t& h, const T* ptr) {
+      uintptr_t v = reinterpret_cast<uintptr_t>(ptr);
+      gxMix(h, &v, sizeof(v));
+    }
+
+  }
+
+
+  void DxvkContext::gxDigestMark(
+          bool                      begin,
+          uint64_t                  tag) {
+    if (!m_gxDigestLevel)
+      return;
+
+    if (begin) {
+      m_gxDigestActive = true;
+      m_gxDigestTag    = tag;
+      m_gxDigestSeq    = 1469598103934665603ull;
+      m_gxDigestDraws  = 0u;
+    } else if (m_gxDigestActive) {
+      m_gxDigestActive = false;
+      // the CLOSE names the bracket: a caller may only know which path drew it afterwards
+      std::fprintf(stderr, "[GXDIGEST] tag=%llx draws=%u seq=%016llx\n", (unsigned long long)tag,
+        m_gxDigestDraws, (unsigned long long)m_gxDigestSeq);
+    }
+  }
+
+
+  // Called after commitGraphicsState succeeded: the logical state is what DXVK just committed. Within one process
+  // run, objects (shaders, views, samplers, buffers) are compared by identity, uniform buffers by their bytes (the
+  // d3d9 constant buffers zero their slices while the digest is armed, so padding and unused lights are zeros).
+  void DxvkContext::gxDigestDraw(
+    const void*                     draw,
+          size_t                    size) {
+    uint64_t h = 1469598103934665603ull;
+    gxMix(h, draw, size);
+    gxMix(h, &m_state.gp.state, sizeof(m_state.gp.state));
+    gxMixPtr(h, m_state.gp.shaders.vs.ptr());
+    gxMixPtr(h, m_state.gp.shaders.tcs.ptr());
+    gxMixPtr(h, m_state.gp.shaders.tes.ptr());
+    gxMixPtr(h, m_state.gp.shaders.gs.ptr());
+    gxMixPtr(h, m_state.gp.shaders.fs.ptr());
+    gxMix(h, &m_state.gp.constants.mask, sizeof(m_state.gp.constants.mask));
+    gxMix(h, m_state.gp.constants.data.data(), sizeof(m_state.gp.constants.data));
+    gxMix(h, m_state.pc.data, sizeof(m_state.pc.data));
+
+    auto mixSlice = [&h] (const DxvkBufferSlice& slice, bool bytes) {
+      gxMixPtr(h, slice.buffer().ptr());
+      size_t length = slice.length();
+      gxMix(h, &length, sizeof(length));
+
+      const void* map = bytes && length ? slice.mapPtr(0) : nullptr;
+
+      if (map)
+        gxMix(h, map, length);
+      else {
+        size_t offset = slice.offset();
+        gxMix(h, &offset, sizeof(offset));
+      }
+    };
+
+    mixSlice(m_state.vi.indexBuffer, false);
+    gxMix(h, &m_state.vi.indexType, sizeof(m_state.vi.indexType));
+
+    for (uint32_t i = 0; i < m_state.vi.vertexBuffers.size(); i++)
+      mixSlice(m_state.vi.vertexBuffers[i], false);
+
+    gxMix(h, m_state.vi.vertexStrides.data(), sizeof(m_state.vi.vertexStrides));
+    gxMix(h, &m_state.vp.viewportCount, sizeof(m_state.vp.viewportCount));
+    gxMix(h, m_state.vp.viewports.data(), sizeof(m_state.vp.viewports));
+    gxMix(h, m_state.vp.scissorRects.data(), sizeof(m_state.vp.scissorRects));
+    gxMix(h, &m_state.dyn, sizeof(m_state.dyn));
+
+    // The resources the pipeline's layout reads, in layout order
+    if (m_state.gp.pipeline) {
+      const auto& layout = m_state.gp.pipeline->getBindings()->layout();
+
+      for (auto setIndex : bit::BitMask(layout.getSetMask())) {
+        for (uint32_t j = 0; j < layout.getBindingCount(setIndex); j++) {
+          const DxvkBindingInfo& binding = layout.getBinding(setIndex, j);
+          const DxvkShaderResourceSlot& slot = m_rc[binding.resourceBinding];
+
+          gxMix(h, &binding.descriptorType, sizeof(binding.descriptorType));
+          gxMix(h, &binding.resourceBinding, sizeof(binding.resourceBinding));
+          gxMixPtr(h, slot.sampler.ptr());
+          gxMixPtr(h, slot.imageView.ptr());
+          gxMixPtr(h, slot.bufferView.ptr());
+          mixSlice(slot.bufferSlice, binding.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+        }
+      }
+    }
+
+    gxMix(m_gxDigestSeq, &h, sizeof(h));
+    m_gxDigestDraws++;
+
+    if (m_gxDigestLevel >= 2u)
+      std::fprintf(stderr, "[GXDIGEST] tag=%llx i=%u h=%016llx\n", (unsigned long long)m_gxDigestTag,
+        m_gxDigestDraws - 1u, (unsigned long long)h);
   }
 
 
@@ -1828,6 +1947,11 @@ namespace dxvk {
           uint32_t                  count,
     const T*                        draws) {
     if (this->commitGraphicsState<Indexed, false>()) {
+      if (unlikely(m_gxDigestActive)) {
+        for (uint32_t i = 0; i < count; i++)
+          gxDigestDraw(&draws[i], sizeof(T));
+      }
+
       if (count == 1u) {
         // Most common case, just emit a single draw
         if constexpr (Indexed) {

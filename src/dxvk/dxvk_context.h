@@ -167,6 +167,19 @@ namespace dxvk {
       const Rc<DxvkImageView>&          view);
 
     /**
+     * \brief GeneralsX C2b: opens / closes an input-digest bracket
+     *
+     * With DXVK_GX_INPUT_DIGEST set, every draw inside a bracket hashes the complete logical
+     * graphics input DXVK commits for it (pipeline state, shaders, specialisation and push
+     * constants, the bound resources of the pipeline's layout - uniform buffers by their
+     * bytes - vertex/index buffers, viewport and dynamic state, the draw's arguments); the
+     * close prints its own \c tag, the bracket's draw count and sequence hash ("[GXDIGEST]").
+     */
+    void gxDigestMark(
+            bool                      begin,
+            uint64_t                  tag);
+
+    /**
      * \brief Begins generating query data
      * \param [in] query The query to end
      */
@@ -1487,6 +1500,17 @@ namespace dxvk {
     bool                    m_endLatencyTracking = false;
 
     DxvkImplicitResolveTracker  m_implicitResolves;
+
+    // GeneralsX C2b input digest (gxDigestMark): 0 off, 1 per bracket, 2 + per draw
+    uint32_t                    m_gxDigestLevel  = 0u;
+    bool                        m_gxDigestActive = false;
+    uint64_t                    m_gxDigestTag    = 0u;
+    uint64_t                    m_gxDigestSeq    = 0u;
+    uint32_t                    m_gxDigestDraws  = 0u;
+
+    void gxDigestDraw(
+      const void*                     draw,
+            size_t                    size);
 
     void blitImageFb(
             Rc<DxvkImageView>     dstView,

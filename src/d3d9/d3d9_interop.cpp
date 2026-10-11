@@ -405,7 +405,8 @@ namespace dxvk {
     , m_retired (new sync::Fence())
     , m_newEpoch(env::getEnvVar("DXVK_GX_NEW_EPOCH") == "1")
     , m_suspend (env::getEnvVar("DXVK_GX_SUSPEND") == "1")
-    , m_inPass  (env::getEnvVar("DXVK_GX_INPASS") == "1") {
+    , m_inPass  (env::getEnvVar("DXVK_GX_INPASS") == "1")
+    , m_digest  (!env::getEnvVar("DXVK_GX_INPUT_DIGEST").empty() && env::getEnvVar("DXVK_GX_INPUT_DIGEST") != "0") {
     // DXVK_GX_NEW_EPOCH=1 is a TEST-ONLY fail arm: the stock beginExternalRendering, whose new
     // tracking epoch lets a later upload be hoisted above earlier external draws.
     if (m_newEpoch)
@@ -589,6 +590,13 @@ namespace dxvk {
   // GeneralsX DrawRun
   ///////////////////////////////
 
+  // The fixed-function VS's own state (key, constants, vertex blend) - the only device flags a task's setters dirty.
+  static const D3D9DeviceFlags GxFFVSFlags(
+    D3D9DeviceFlag::DirtyFFVertexData,
+    D3D9DeviceFlag::DirtyFFVertexBlend,
+    D3D9DeviceFlag::DirtyFFVertexShader);
+
+
   HRESULT STDMETHODCALLTYPE D3D9GxExternal::DrawRun(
           D3DPRIMITIVETYPE          PrimitiveType,
           UINT                      TaskCount,
@@ -677,11 +685,20 @@ namespace dxvk {
   }
 
 
-  // The fixed-function VS's own state (key, constants, vertex blend) - the only device flags a task's setters dirty.
-  static const D3D9DeviceFlags GxFFVSFlags(
-    D3D9DeviceFlag::DirtyFFVertexData,
-    D3D9DeviceFlag::DirtyFFVertexBlend,
-    D3D9DeviceFlag::DirtyFFVertexShader);
+  HRESULT STDMETHODCALLTYPE D3D9GxExternal::DigestMark(
+          UINT                      Begin,
+          UINT64                    Tag) {
+    if (!m_digest)
+      return S_FALSE;
+
+    D3D9DeviceLock lock = m_device->LockDevice();
+
+    m_device->EmitCs([cBegin = Begin != 0, cTag = Tag] (DxvkContext* ctx) {
+      ctx->gxDigestMark(cBegin, cTag);
+    });
+
+    return D3D_OK;
+  }
 
 
   // Whether PrepareDraw would find nothing to do but the fixed-function VS's own state. A flag the run's

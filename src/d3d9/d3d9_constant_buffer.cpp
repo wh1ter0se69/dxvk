@@ -1,3 +1,4 @@
+#include <cstring>
 #include "d3d9_constant_buffer.h"
 #include "d3d9_device.h"
 
@@ -32,7 +33,10 @@ namespace dxvk {
   , m_stages    (Stages)
   , m_size      (Size)
   , m_align     (getAlignment(pDevice->GetDXVKDevice())) {
-
+    // GeneralsX C2b input digest: uniform buffers are hashed by their bytes, so slices start zeroed (the padding,
+    // alignment slack and unused lights a writer leaves would otherwise hash whatever the memory held before)
+    std::string gxDigest = env::getEnvVar("DXVK_GX_INPUT_DIGEST");
+    m_gxZero = !gxDigest.empty() && gxDigest != "0";
   }
 
 
@@ -70,6 +74,10 @@ namespace dxvk {
 
     void* mapPtr = reinterpret_cast<char*>(m_slice->mapPtr()) + m_offset;
     m_offset += size;
+
+    if (unlikely(m_gxZero))
+      std::memset(mapPtr, 0, size);
+
     return mapPtr;
   }
 
@@ -86,6 +94,9 @@ namespace dxvk {
     ] (DxvkContext* ctx) mutable {
       ctx->invalidateBuffer(cBuffer, std::move(cSlice));
     });
+
+    if (unlikely(m_gxZero))
+      std::memset(m_slice->mapPtr(), 0, m_size);
 
     return m_slice->mapPtr();
   }

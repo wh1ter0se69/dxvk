@@ -184,6 +184,10 @@ namespace dxvk {
     HRESULT STDMETHODCALLTYPE GetRunStats(
             DxvkGxRunStats*           pStats);
 
+    HRESULT STDMETHODCALLTYPE DigestMark(
+            UINT                      Begin,
+            UINT64                    Tag);
+
   private:
 
     bool RunFastEligible();
@@ -200,6 +204,7 @@ namespace dxvk {
     bool            m_inPass;
     DxvkGxRunStats  m_runStats = { };
     uint32_t        m_runDormant = 0;   // device flags the run's last full preparation left set (RunFastEligible)
+    bool            m_digest     = false;  // DXVK_GX_INPUT_DIGEST (DigestMark)
 
   };
 

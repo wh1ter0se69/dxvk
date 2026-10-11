@@ -413,6 +413,16 @@ IDxvkGxExternal : public IUnknown {
 
   virtual HRESULT STDMETHODCALLTYPE GetRunStats(
           DxvkGxRunStats*           pStats) = 0;
+
+  /**
+   * \brief C2b: opens (Begin != 0) or closes an input-digest bracket, in D3D order
+   *
+   * A no-op returning S_FALSE unless DXVK_GX_INPUT_DIGEST was set at device creation;
+   * see DxvkContext::gxDigestMark.
+   */
+  virtual HRESULT STDMETHODCALLTYPE DigestMark(
+          UINT                      Begin,
+          UINT64                    Tag) = 0;
 };
 
 /**

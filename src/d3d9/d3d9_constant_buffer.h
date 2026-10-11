@@ -72,6 +72,7 @@ namespace dxvk {
     VkDeviceSize          m_size    = 0ull;
     VkDeviceSize          m_align   = 0ull;
     VkDeviceSize          m_offset  = 0ull;
+    bool                  m_gxZero  = false;  // GeneralsX C2b: zero each slice while DXVK_GX_INPUT_DIGEST is armed
 
     Rc<DxvkBuffer>        m_buffer  = nullptr;
     Rc<DxvkResourceAllocation> m_slice = nullptr;
